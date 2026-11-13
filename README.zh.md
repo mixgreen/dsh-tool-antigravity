@@ -2,9 +2,8 @@
 
 [English](README.md) | 中文
 
-[![npm version](https://img.shields.io/npm/v/dsh-tool-antigravity.svg?color=blue)](https://www.npmjs.com/package/dsh-tool-antigravity)
-[![license](https://img.shields.io/github/license/Jaylor-Wang/dsh-tool-antigravity.svg)](LICENSE)
-[![GitHub release](https://img.shields.io/github/v/release/Jaylor-Wang/dsh-tool-antigravity.svg)](https://github.com/Jaylor-Wang/dsh-tool-antigravity/releases)
+[![GitHub release](https://img.shields.io/github/v/release/mixgreen/dsh-tool-antigravity.svg)](https://github.com/mixgreen/dsh-tool-antigravity/releases)
+[![license](https://img.shields.io/github/license/mixgreen/dsh-tool-antigravity.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-39%20suites%20%7C%20425%20passed-brightgreen.svg)](tests/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict%20Types-blue.svg)](tsconfig.json)
 
@@ -14,7 +13,7 @@
 
 ---
 
-## 未发布
+## V 0.6.1 版本重要更新
 
 - 额度分为 Gemini（含 Hydrogen）、Claude/GPT、Gemini 4 Argon 三组。Argon 周额度不再并入 Gemini 周额度，只显示服务端实际返回的时间窗口。
 - 设置面板和桌宠独立展示三组额度；桌宠按当前模型所属组计算余额，缺少该组时明确报错，不借用其他组的额度。
@@ -64,20 +63,21 @@
 
 ## 安装与快速上手
 
-### 通过 DSH 插件命令安装（推荐）
+### 从 GitHub Release 安装（推荐）
+
+本分支以 `.tgz` 发布，不发布到上游同名 npm 包。使用 Node.js 22.19+（或 24+）及 DSH 0.1.5-rc.1 对应的宿主 API；旧版 DSH 需先升级。运行：
+
 ```sh
-# 直接安装到当前激活的 web profile
-dsh plugin --profile web add dsh-tool-antigravity
+dsh plugin --profile web add https://github.com/mixgreen/dsh-tool-antigravity/releases/download/V0.6.1/dsh-tool-antigravity-0.6.1.tgz
 ```
 
-### 通过 npm / pnpm 安装
-```sh
-# 使用 npm
-npm install dsh-tool-antigravity
+也可从 [V0.6.1 Release](https://github.com/mixgreen/dsh-tool-antigravity/releases/tag/V0.6.1) 下载后安装：
 
-# 使用 pnpm
-pnpm add dsh-tool-antigravity
+```sh
+dsh plugin --profile web add /绝对路径/dsh-tool-antigravity-0.6.1.tgz
 ```
+
+安装完成后重启 DSH。插件管理器会根据 `dsh.bundle` 自动启用认证、模型路由和图片工具；无需手工重复添加插件行。首次使用仍需在设置中登录 Google。不要通过 `pnpm update dsh-tool-antigravity --latest` 切回上游 npm 版本；升级本分支请安装新的 Release 地址。
 
 ### Cordis 插件配置
 在你的 `cordis.patch.yml` 或 DSH 配置文件中注入插件行：

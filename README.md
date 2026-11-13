@@ -2,9 +2,8 @@
 
 English | [中文](README.zh.md)
 
-[![npm version](https://img.shields.io/npm/v/dsh-tool-antigravity.svg?color=blue)](https://www.npmjs.com/package/dsh-tool-antigravity)
-[![license](https://img.shields.io/github/license/Jaylor-Wang/dsh-tool-antigravity.svg)](LICENSE)
-[![GitHub release](https://img.shields.io/github/v/release/Jaylor-Wang/dsh-tool-antigravity.svg)](https://github.com/Jaylor-Wang/dsh-tool-antigravity/releases)
+[![GitHub release](https://img.shields.io/github/v/release/mixgreen/dsh-tool-antigravity.svg)](https://github.com/mixgreen/dsh-tool-antigravity/releases)
+[![license](https://img.shields.io/github/license/mixgreen/dsh-tool-antigravity.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-39%20suites%20%7C%20425%20passed-brightgreen.svg)](tests/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict%20Types-blue.svg)](tsconfig.json)
 
@@ -14,7 +13,7 @@ Provides private Google OAuth 2.0 PKCE authentication, smart multi-account pooli
 
 ---
 
-## Unreleased
+## Highlights in V 0.6.1
 
 - Quotas are tracked separately for Gemini (including Hydrogen), Claude/GPT, and Gemini 4 Argon. Argon's weekly quota is not merged into Gemini's weekly quota; only windows returned by the provider are displayed.
 - The settings dashboard and pet balance show the three pools independently. Pet balance follows the selected model's pool and reports missing quota instead of borrowing another pool's balance.
@@ -64,20 +63,21 @@ Thinking levels: [Google Antigravity model documentation](https://antigravity.go
 
 ## Installation
 
-### Via DSH Plugin CLI (Recommended)
+### Install from GitHub Releases (recommended)
+
+This fork ships `.tgz` assets, not the upstream npm package of the same name. Requires Node.js 22.19+ (or 24+) and the DSH 0.1.5-rc.1 Host APIs; upgrade older DSH installations first.
+
 ```sh
-# Add directly to your active DSH web profile
-dsh plugin --profile web add dsh-tool-antigravity
+dsh plugin --profile web add https://github.com/mixgreen/dsh-tool-antigravity/releases/download/V0.6.1/dsh-tool-antigravity-0.6.1.tgz
 ```
 
-### Via npm / pnpm
-```sh
-# Using npm
-npm install dsh-tool-antigravity
+Alternatively, download the archive from [Release V0.6.1](https://github.com/mixgreen/dsh-tool-antigravity/releases/tag/V0.6.1):
 
-# Using pnpm
-pnpm add dsh-tool-antigravity
+```sh
+dsh plugin --profile web add /absolute/path/dsh-tool-antigravity-0.6.1.tgz
 ```
+
+Restart DSH after installation. The plugin manager activates authentication, model routing, and image tools through `dsh.bundle`; do not add duplicate plugin rows manually. Google sign-in is still required on first use. Install a new Release URL to upgrade this fork, rather than switching to upstream npm with `pnpm update dsh-tool-antigravity --latest`.
 
 ### Cordis Plugin Configuration
 Add the plugin entries to your `cordis.patch.yml` or DSH config file:
