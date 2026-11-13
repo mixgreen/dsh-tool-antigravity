@@ -246,6 +246,20 @@ describe('Antigravity login RPC', () => {
     expect(parseUsageResult({ state: 'available', groups: [{ group: 'gemini', modelCount: 2, windows: [{ window: '5h', remainingFraction: 2, resetTime: '2030-01-02T00:00:00.000Z' }] }] })).toBeUndefined()
   })
 
+  it('accepts three independent quota pools while rejecting duplicate and unknown groups', () => {
+    const valid = {
+      state: 'available',
+      groups: [
+        { group: 'gemini', modelCount: 2, windows: [{ window: 'weekly', remainingFraction: 0.96, resetTime: '2030-01-01T00:00:00.000Z' }] },
+        { group: 'non-gemini', modelCount: 3, windows: [{ window: '5h', remainingFraction: 1, resetTime: '2030-01-02T00:00:00.000Z' }] },
+        { group: 'gemini-argon', modelCount: 1, windows: [{ window: 'weekly', remainingFraction: 0.16, resetTime: '2030-01-03T00:00:00.000Z' }] },
+      ],
+    }
+    expect(parseUsageResult(valid)).toEqual(valid)
+    expect(parseUsageResult({ ...valid, groups: [valid.groups[2], valid.groups[2]] })).toBeUndefined()
+    expect(parseUsageResult({ ...valid, groups: [{ ...valid.groups[2], group: 'unknown' }] })).toBeUndefined()
+  })
+
   it('validates the browser response as a closed, value-free status schema', () => {
     const valid = {
       status: {

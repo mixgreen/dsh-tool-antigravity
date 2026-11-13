@@ -14,6 +14,12 @@
 
 ---
 
+## 未发布
+
+- 额度分为 Gemini（含 Hydrogen）、Claude/GPT、Gemini 4 Argon 三组。Argon 周额度不再并入 Gemini 周额度，只显示服务端实际返回的时间窗口。
+- 设置面板和桌宠独立展示三组额度；桌宠按当前模型所属组计算余额，缺少该组时明确报错，不借用其他组的额度。
+- 限流轮换按额度组隔离，Claude 与 GPT 共用一组。已有全账号冷却保留至到期；新增分组冷却在凭证刷新、应用重启后仍然保留，不修改账号凭证。
+
 ## V 0.6.0 版本重要更新
 
 - **新增 Gemini 4 Hydrogen**：模型标识为 `antigravity-gemini-4-hydrogen`，支持 `low`、`medium`、`high` 和 `xhigh`（Extra High），默认 `high`。

@@ -53,6 +53,8 @@ export interface PooledAccount {
   readonly addedAt: string
   /** Epoch ms before which this account must not be selected again; absent means ready. */
   readonly cooldownUntil?: number
+  /** 按额度组记录限流；旧的全账号冷却仍适用于所有组。 */
+  readonly cooldownUntilByFamily?: Readonly<Record<string, number>>
   /**
    * Rotation failures that count as *consecutive*.
    *
@@ -330,7 +332,7 @@ export function createAuthStorePool(path: string, options: AuthStorePoolOptions 
     readyCount: async () => {
       const pool = await loadPool()
       const at = now()
-      return pool.accounts.filter(account => !isCooling(account, at)).length
+      return pool.accounts.filter(account => !isCooling(account, at, family())).length
     },
 
     markCooldown: (lineage, durationMs, targetFamily) => mutatePool(path, platform, pool => {
@@ -344,7 +346,9 @@ export function createAuthStorePool(path: string, options: AuthStorePoolOptions 
         const streak = effectiveFailureCount(account, at) + 1
         return {
           ...account,
-          cooldownUntil: until,
+          ...(targetFamily === undefined
+            ? { cooldownUntil: until }
+            : { cooldownUntilByFamily: { ...account.cooldownUntilByFamily, [targetFamily]: until } }),
           consecutiveFailures: streak,
           lastFailureAt: at,
         }
@@ -422,13 +426,14 @@ function selectAccount(pool: AuthPoolFile, targetFamily: string | undefined, at:
   const start = Number.isSafeInteger(cursor) ? Math.max(0, cursor) % pool.accounts.length : 0
   for (let step = 0; step < pool.accounts.length; step += 1) {
     const account = pool.accounts[(start + step) % pool.accounts.length]
-    if (account !== undefined && !isCooling(account, at)) return account
+    if (account !== undefined && !isCooling(account, at, targetFamily)) return account
   }
   return pool.accounts[start]
 }
 
-function isCooling(account: PooledAccount, at: number): boolean {
-  return account.cooldownUntil !== undefined && account.cooldownUntil > at
+function isCooling(account: PooledAccount, at: number, targetFamily?: string): boolean {
+  return (account.cooldownUntil ?? 0) > at
+    || (targetFamily !== undefined && (account.cooldownUntilByFamily?.[targetFamily] ?? 0) > at)
 }
 
 function advanceIndex(index: number, length: number): number {
@@ -673,6 +678,12 @@ function parseAccount(value: unknown): PooledAccount {
   const cooldownUntil = typeof record.cooldownUntil === 'number' && Number.isFinite(record.cooldownUntil)
     ? record.cooldownUntil
     : undefined
+  const cooldowns = record.cooldownUntilByFamily
+  const cooldownUntilByFamily = typeof cooldowns === 'object' && cooldowns !== null && !Array.isArray(cooldowns)
+    ? Object.fromEntries(Object.entries(cooldowns).filter(([key, until]) =>
+      isBoundedSafeText(key, 256) && typeof until === 'number' && Number.isFinite(until) && until >= 0,
+    )) as Record<string, number>
+    : undefined
   const consecutiveFailures = Number.isSafeInteger(record.consecutiveFailures) && (record.consecutiveFailures as number) >= 0
     ? record.consecutiveFailures as number
     : undefined
@@ -687,6 +698,7 @@ function parseAccount(value: unknown): PooledAccount {
     lineage,
     addedAt,
     ...(cooldownUntil === undefined ? {} : { cooldownUntil }),
+    ...(cooldownUntilByFamily === undefined ? {} : { cooldownUntilByFamily }),
     ...(consecutiveFailures === undefined ? {} : { consecutiveFailures }),
     ...(lastFailureAt === undefined ? {} : { lastFailureAt }),
   }

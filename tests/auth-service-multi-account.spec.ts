@@ -10,7 +10,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createAntigravityAuthService } from '../src/auth-service.ts'
 import { createMemoryCapabilityGates } from '../src/capability-gates.ts'
 import { createMemoryAuthStore } from '../src/auth-store.ts'
-import { readPoolFile } from '../src/auth-store-pool.ts'
+import { createAuthStorePool, readPoolFile } from '../src/auth-store-pool.ts'
+import { AntigravityAdapter, ANTIGRAVITY_PROVIDER } from '../src/llm-adapter.ts'
 
 const directories: string[] = []
 
@@ -98,6 +99,50 @@ describe('multi-account auth service wiring', () => {
     // Account B is exhausted too: nothing is left ready.
     expect(await service.rotateOnFailure({ status: 429, family: 'gemini' })).toBe('exhausted')
     expect(await service.readyAccountCount()).toBe(0)
+  })
+
+  it('isolates Argon exhaustion from Hydrogen and shares Claude quota with GPT', async () => {
+    const directory = await serviceDir()
+    const pool = createAuthStorePool(join(directory, 'accounts.json'))
+    await pool.commit({ refreshToken: 'token-a', projectId: 'p' })
+    await pool.commit({ refreshToken: 'token-b', projectId: 'p' })
+    const service = createAntigravityAuthService({
+      storePath: join(directory, 'auth.json'),
+      multiAccount: true,
+      gates: createMemoryCapabilityGates(),
+      credentialOptions: {
+        refreshToken: async ({ refreshToken }) => ({ accessToken: refreshToken, expiresAt: Date.now() + 3_600_000 }),
+      },
+    })
+    const served: string[] = []
+    const adapter = new AntigravityAdapter({
+      auth: service,
+      transport: {
+        request: async input => {
+          const model = JSON.parse(String(input.body)).model as string
+          if (input.accessToken === 'token-a' && (model.includes('argon') || model.includes('claude'))) {
+            return new Response('', { status: 429 })
+          }
+          served.push(`${model}:${input.accessToken}`)
+          return new Response('data: {"response":{"parts":[{"text":"ok"}],"finishReason":"STOP"}}\n\n')
+        },
+      },
+    })
+    try {
+      for (const model of ['antigravity-gemini-4-argon', 'antigravity-gemini-4-hydrogen', 'antigravity-claude-sonnet-5-5', 'antigravity-gpt-oss-120b-medium']) {
+        const chunks = []
+        for await (const chunk of adapter.stream({ provider: ANTIGRAVITY_PROVIDER, model, messages: [] })) chunks.push(chunk)
+        expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      }
+      expect(served).toEqual([
+        'gemini-4-argon-medium:token-b',
+        'gemini-4-hydrogen-high:token-a',
+        'claude-sonnet-5-5-low:token-b',
+        'gpt-oss-120b-medium:token-b',
+      ])
+    } finally {
+      await service.dispose()
+    }
   })
 
   it('does not rest any account on a provider capacity failure', async () => {

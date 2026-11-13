@@ -14,6 +14,12 @@ Provides private Google OAuth 2.0 PKCE authentication, smart multi-account pooli
 
 ---
 
+## Unreleased
+
+- Quotas are tracked separately for Gemini (including Hydrogen), Claude/GPT, and Gemini 4 Argon. Argon's weekly quota is not merged into Gemini's weekly quota; only windows returned by the provider are displayed.
+- The settings dashboard and pet balance show the three pools independently. Pet balance follows the selected model's pool and reports missing quota instead of borrowing another pool's balance.
+- Rate-limit rotation now isolates each quota pool; Claude and GPT share one pool. Existing account-wide cooldowns remain effective until expiry. New pool-specific cooldowns survive credential refresh and application restart; account credentials are unchanged.
+
 ## Highlights in V 0.6.0
 
 - **Gemini 4 Hydrogen**: Added `antigravity-gemini-4-hydrogen` with `low`, `medium`, `high` (default), and `xhigh` (Extra High) reasoning efforts.

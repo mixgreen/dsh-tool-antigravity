@@ -302,7 +302,10 @@ export class AntigravityAdapter extends LlmAdapter {
       yield finishChunk('aborted', 'CANCELLED')
       return
     }
-    const family = antigravityModelFamily(options.model)
+    const modelFamily = antigravityModelFamily(options.model)
+    const family = isGeminiArgonModel(options.model)
+      ? 'gemini-argon'
+      : modelFamily === 'claude' || modelFamily === 'gpt-oss' ? 'non-gemini' : modelFamily
     const hasEmitted = { value: false }
     let replayed = false
     let networkRetryCount = 0

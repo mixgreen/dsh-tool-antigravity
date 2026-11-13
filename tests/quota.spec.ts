@@ -29,6 +29,50 @@ describe('Antigravity quota', () => {
     expect(JSON.stringify(result)).not.toMatch(/secret|bucketId|displayName/u)
   })
 
+  it('keeps the three provider pools and their reset windows independent', () => {
+    const argonReset = '2030-01-05T00:00:00.000Z'
+    const result = normalizeQuotaResponse({
+      groups: [
+        { displayName: 'Gemini Models', description: 'Gemini models excluding Argon', buckets: [
+          { bucketId: 'gemini-weekly', remainingFraction: 0.96, resetTime: reset },
+          { bucketId: 'gemini-5h', remainingFraction: 0.95, resetTime: reset },
+        ] },
+        { displayName: 'Claude and GPT models', buckets: [
+          { bucketId: '3p-weekly', remainingFraction: 1, resetTime: reset },
+          { bucketId: '3p-5h', remainingFraction: 1, resetTime: reset },
+        ] },
+        { displayName: 'Gemini 4 Argon', buckets: [
+          { bucketId: 'argon-weekly', remainingFraction: 0.16, resetTime: argonReset },
+        ] },
+      ],
+    }, Date.parse('2029-12-31T00:00:00.000Z'))
+    expect(result.groups).toEqual([
+      { group: 'gemini', modelCount: 0, windows: [
+        { window: '5h', remainingFraction: 0.95, resetTime: reset },
+        { window: 'weekly', remainingFraction: 0.96, resetTime: reset },
+      ] },
+      { group: 'non-gemini', modelCount: 0, windows: [
+        { window: '5h', remainingFraction: 1, resetTime: reset },
+        { window: 'weekly', remainingFraction: 1, resetTime: reset },
+      ] },
+      { group: 'gemini-argon', modelCount: 0, windows: [
+        { window: 'weekly', remainingFraction: 0.16, resetTime: argonReset },
+      ] },
+    ])
+  })
+
+  it('recognizes an Argon bucket nested under a general Gemini title', () => {
+    const result = normalizeQuotaResponse({ groups: [{
+      displayName: 'Gemini Models',
+      buckets: [
+        { bucketId: 'gemini-weekly', remainingFraction: 0.96, resetTime: reset },
+        { bucket_id: 'gemini_argon_weekly', remainingFraction: 0.16, resetTime: reset },
+      ],
+    }] }, Date.parse('2029-12-31T00:00:00.000Z'))
+    expect(result.groups?.map(group => [group.group, group.windows[0]?.remainingFraction]))
+      .toEqual([['gemini', 0.96], ['gemini-argon', 0.16]])
+  })
+
   it('coalesces refreshes, enforces the minimum interval, and keeps errors value-safe', async () => {
     const now = vi.fn(() => 1_900_000_000_000)
     const request = vi.fn(async input => {

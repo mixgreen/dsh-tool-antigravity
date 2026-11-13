@@ -20,6 +20,7 @@ export const QUOTA_REFRESH_MIN_INTERVAL_MS = 30_000
 
 export type QuotaState = 'available' | 'unauthenticated' | 'forbidden' | 'rate-limited' | 'offline' | 'timeout' | 'protocol-drift'
 export type QuotaWindowKind = '5h' | 'weekly'
+export type QuotaGroupId = 'gemini' | 'non-gemini' | 'gemini-argon'
 
 export interface QuotaWindowView {
   readonly window: QuotaWindowKind
@@ -28,7 +29,7 @@ export interface QuotaWindowView {
 }
 
 export interface QuotaGroupView {
-  readonly group: 'gemini' | 'non-gemini'
+  readonly group: QuotaGroupId
   readonly modelCount: number
   readonly windows: readonly QuotaWindowView[]
 }
@@ -113,7 +114,8 @@ export function normalizeQuotaResponse(value: unknown, now = Date.now()): QuotaS
     }
     throw new QuotaNormalizationError('The quota response did not contain recognized windows')
   }
-  return { state: 'available', checkedAt: new Date(now).toISOString(), groups: groups.sort((left, right) => left.group.localeCompare(right.group)) }
+  const groupOrder: readonly QuotaGroupId[] = ['gemini', 'non-gemini', 'gemini-argon']
+  return { state: 'available', checkedAt: new Date(now).toISOString(), groups: groups.sort((left, right) => groupOrder.indexOf(left.group) - groupOrder.indexOf(right.group)) }
 }
 
 export class QuotaNormalizationError extends Error {
@@ -270,7 +272,14 @@ function identifyWindow(value: Record<string, unknown>): QuotaWindowKind | undef
   return undefined
 }
 
-function identifyGroup(candidate: Record<string, unknown>, bucket?: Record<string, unknown>): 'gemini' | 'non-gemini' | undefined {
+function identifyGroup(candidate: Record<string, unknown>, bucket?: Record<string, unknown>): QuotaGroupId | undefined {
+  // 专属桶先于通用 Gemini 标题匹配，说明文案中的模型名不能改变额度归属。
+  const identity = [
+    bucket?.bucketId, bucket?.bucket_id, bucket?.displayName,
+    candidate.displayName, candidate.group, candidate.quotaGroup, candidate.quota_group,
+    candidate.modelFamily, candidate.title, candidate.name,
+  ].filter(value => typeof value === 'string').join(' ').toLowerCase()
+  if (/(?:^|[^a-z0-9])argon(?:[^a-z0-9]|$)/u.test(identity)) return 'gemini-argon'
   const raw = [
     candidate.displayName,
     candidate.group,

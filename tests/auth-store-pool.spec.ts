@@ -202,35 +202,34 @@ describe('auth-store-pool', () => {
     expect(active?.lineage).not.toBe(cursorAccount?.lineage)
   })
 
-  it('keeps independent cursors per model family', async () => {
-    const poolPathValue = await poolPath()
-    let requestedFamily: string | undefined = 'gemini'
-    const store = createAuthStorePool(poolPathValue, { family: () => requestedFamily })
-    await store.commit({ refreshToken: 'token-a', projectId: 'project-a' })
+  it('keeps quota cooldowns independent after reload and credential refresh', async () => {
+    const path = await poolPath()
+    let family = 'gemini-argon'
+    const store = createAuthStorePool(path, { family: () => family })
+    const first = await store.commit({ refreshToken: 'token-a', projectId: 'project-a' })
+    if (first.lineage === undefined) throw new Error('账号池未返回 lineage')
     await store.commit({ refreshToken: 'token-b', projectId: 'project-b' })
+    await store.markCooldown(first.lineage ?? '', 60_000, family)
 
-    // Gemini cools the account it is pointed at. Only Gemini's cursor is recorded;
-    // reading is side-effect free, so Claude has no cursor of its own yet.
-    const geminiActive = await store.read()
-    await store.markCooldown(geminiActive?.lineage ?? '', 60_000, 'gemini')
-    const afterGemini = await store.readPool()
-    expect(afterGemini.accounts.find(account => account.lineage === geminiActive?.lineage)?.cooldownUntil).toBeDefined()
-    expect(afterGemini.activeIndexByFamily?.['gemini']).toBeDefined()
-    expect(afterGemini.activeIndexByFamily?.['claude']).toBeUndefined()
+    const reloaded = createAuthStorePool(path, { family: () => family })
+    expect((await reloaded.read())?.refreshToken).toBe('token-b')
+    expect(await reloaded.readyCount()).toBe(1)
+    for (const other of ['gemini', 'non-gemini']) {
+      family = other
+      expect((await reloaded.read())?.refreshToken).toBe('token-a')
+      expect(await reloaded.readyCount()).toBe(2)
+    }
 
-    // Gemini, having rotated, now resolves to the other account.
-    expect((await store.read())?.lineage).not.toBe(geminiActive?.lineage)
+    await reloaded.commit({ refreshToken: 'token-a-refreshed', projectId: 'project-a', lineage: first.lineage })
+    family = 'gemini-argon'
+    expect((await reloaded.read())?.refreshToken).toBe('token-b')
+    expect(await reloaded.readyCount()).toBe(1)
 
-    // Claude established its own cursor by rotating it, and that cursor is independent
-    // of Gemini's: it is what proves a Gemini-only exhaustion never rotates Claude.
-    const claudeTarget = await store.read()
-    await store.markCooldown(claudeTarget?.lineage ?? '', 60_000, 'claude')
-    const claudeCursor = (await store.readPool()).activeIndexByFamily?.['claude']
-    expect(claudeCursor).toBeDefined()
-
-    // Cooling for Gemini afterwards must not disturb the cursor Claude owns.
-    await store.markCooldown(geminiActive?.lineage ?? '', 60_000, 'gemini')
-    expect((await store.readPool()).activeIndexByFamily?.['claude']).toBe(claudeCursor)
+    family = 'non-gemini'
+    await reloaded.markCooldown(first.lineage ?? '', 60_000, family)
+    expect((await reloaded.read())?.refreshToken).toBe('token-b')
+    family = 'gemini'
+    expect((await reloaded.read())?.refreshToken).toBe('token-a-refreshed')
   })
 
   it('scopes a family cursor so another family still follows the pool cursor', async () => {
@@ -325,7 +324,7 @@ describe('auth-store-pool', () => {
 
   it('rejects an unsupported pool version', async () => {
     const path = await poolPath()
-    await writeFile(path, JSON.stringify({ version: 99, accounts: [], activeIndex: 0 }), 'utf8')
+    await writeFile(path, JSON.stringify({ version: 99, accounts: [], activeIndex: 0 }), { encoding: 'utf8', mode: 0o600 })
     const store = createAuthStorePool(path)
     await expect(store.read().catch(error => (error as AuthStoreError).code))
       .resolves.toBe('AUTH_STORE_UNSUPPORTED_VERSION')
@@ -337,7 +336,7 @@ describe('auth-store-pool', () => {
       version: AUTH_POOL_VERSION,
       accounts: [{ refreshToken: '', projectId: 'p', lineage: 'l' }],
       activeIndex: 0,
-    }), 'utf8')
+    }), { encoding: 'utf8', mode: 0o600 })
     const store = createAuthStorePool(path)
     await expect(store.read().catch(error => (error as AuthStoreError).code))
       .resolves.toBe('AUTH_STORE_CORRUPT')
@@ -349,7 +348,7 @@ describe('auth-store-pool', () => {
       version: AUTH_POOL_VERSION,
       accounts: [{ refreshToken: 'token-a', projectId: 'p', lineage: 'l', addedAt: new Date(0).toISOString() }],
       activeIndex: 57,
-    }), 'utf8')
+    }), { encoding: 'utf8', mode: 0o600 })
     const pool = await readPoolFile(path)
     expect(pool.activeIndex).toBe(0)
   })
@@ -363,7 +362,7 @@ describe('auth-store-pool', () => {
         { refreshToken: 'token-b', projectId: 'p', lineage: 'same', addedAt: new Date(0).toISOString() },
       ],
       activeIndex: 0,
-    }), 'utf8')
+    }), { encoding: 'utf8', mode: 0o600 })
     const pool = await readPoolFile(path)
     expect(pool.accounts).toHaveLength(1)
     expect(pool.accounts[0]?.refreshToken).toBe('token-a')

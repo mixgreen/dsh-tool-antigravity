@@ -115,8 +115,8 @@ describe('account rotation end to end', () => {
     await attemptWithRotation(store, impl, 'gemini')
     const pool = await store.readPool()
     const rested = pool.accounts.find(account => account.refreshToken === 'token-a')
-    expect(rested?.cooldownUntil).toBeDefined()
-    expect(rested?.cooldownUntil ?? 0).toBeGreaterThan(Date.now())
+    expect(rested?.cooldownUntilByFamily?.gemini).toBeDefined()
+    expect(rested?.cooldownUntilByFamily?.gemini ?? 0).toBeGreaterThan(Date.now())
     expect(await store.readyCount()).toBe(1)
   })
 
@@ -198,18 +198,15 @@ describe('account rotation end to end', () => {
     const geminiAttempt = await attemptWithRotation(store, impl, 'gemini')
     expect(geminiAttempt.ok === false && geminiAttempt.refreshToken).toBe('token-a')
 
-    // Claude never recorded a cursor of its own, so it follows the pool cursor — and the
-    // pool cursor is untouched by the family-scoped cooldown. Either way Claude must not
-    // be left without a usable account.
+    // Gemini 的冷却不能驱逐仍可用于 Claude 的同一账号。
     family = 'claude'
     const claudeRecord = await store.read()
-    expect(claudeRecord).toBeDefined()
-    expect(claudeRecord?.refreshToken).toBe('token-b')
+    expect(claudeRecord?.refreshToken).toBe('token-a')
 
     // The exhausted account is rested for Gemini only.
     const pool = await store.readPool()
     const rested = pool.accounts.find(account => account.refreshToken === 'token-a')
-    expect(rested?.cooldownUntil).toBeDefined()
+    expect(rested?.cooldownUntilByFamily?.gemini).toBeDefined()
     expect(pool.activeIndexByFamily?.['gemini']).toBeDefined()
   })
 })

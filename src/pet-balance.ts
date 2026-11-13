@@ -3,15 +3,16 @@
  *
  * 采用 dsh-pet 的 `shape: 'custom'` 规范：
  * - 声明式节点树，两端共用白名单渲染器，不修改 dsh-pet 公共层；
- * - 气泡顶端明确标注 `google-antigravity` 与模型分组标签（Gemini / Claude）；
+ * - 气泡顶端明确标注 `google-antigravity` 与模型分组标签（Gemini / Claude / Gemini 4 Argon）；
  * - 额度统一展示为「剩余 XX%」，进度条如实体现剩余健康度；
- * - 多页循环切换：Gemini 与 Claude / 3P 分组各占一页，自动根据当前选中的模型优先排在首页；
+ * - 多页循环切换：Gemini、Claude / GPT 与 Gemini 4 Argon 分组各占一页，当前选中模型的分组优先排在首页；
  * - 计算当前组最告急窗口的已用百分比（0-100）作为 `percent`，驱动桌宠档位动画。
  *
  * @module antigravity-auth/pet-balance
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { isGeminiArgonModel } from '@cortexkit/antigravity-auth-core'
 import type { AntigravityAuthService } from './auth-service.ts'
 import type { QuotaStatusView, QuotaWindowView } from './quota.ts'
 
@@ -213,6 +214,7 @@ export function registerAntigravityPetBalance(ctx: Context, service: Antigravity
 
         const geminiGroup = groups.find(g => g.group === 'gemini')
         const nonGeminiGroup = groups.find(g => g.group === 'non-gemini')
+        const argonGroup = groups.find(g => g.group === 'gemini-argon')
 
         let currentModel = ''
         try {
@@ -235,12 +237,16 @@ export function registerAntigravityPetBalance(ctx: Context, service: Antigravity
         const nonGeminiBadge = isGptModel ? 'GPT-OSS' : 'Claude'
 
         const groupEntries: Array<{ group: typeof groups[number]; badge: string }> = []
-        if (isNonGemini) {
-          if (nonGeminiGroup) groupEntries.push({ group: nonGeminiGroup, badge: nonGeminiBadge })
-          if (geminiGroup) groupEntries.push({ group: geminiGroup, badge: 'Gemini' })
-        } else {
-          if (geminiGroup) groupEntries.push({ group: geminiGroup, badge: 'Gemini' })
-          if (nonGeminiGroup) groupEntries.push({ group: nonGeminiGroup, badge: nonGeminiBadge })
+        if (geminiGroup) groupEntries.push({ group: geminiGroup, badge: 'Gemini' })
+        if (nonGeminiGroup) groupEntries.push({ group: nonGeminiGroup, badge: nonGeminiBadge })
+        if (argonGroup) groupEntries.push({ group: argonGroup, badge: 'Gemini 4 Argon' })
+        const selectedGroup = isGeminiArgonModel(currentModel) ? argonGroup : isNonGemini ? nonGeminiGroup : geminiGroup
+        if (selectedGroup === undefined && (isGeminiArgonModel(currentModel) || isNonGemini || currentModel.includes('gemini'))) {
+          throw new Error('Antigravity 响应缺少当前模型的配额分组')
+        }
+        const selectedIndex = groupEntries.findIndex(entry => entry.group === selectedGroup)
+        if (selectedIndex > 0) {
+          groupEntries.unshift(groupEntries.splice(selectedIndex, 1)[0]!)
         }
         for (const g of groups) {
           if (!groupEntries.some(e => e.group === g)) {
