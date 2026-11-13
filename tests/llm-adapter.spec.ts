@@ -642,6 +642,72 @@ describe('Antigravity LLM adapter', () => {
     }
   })
 
+  it.each([
+    { 'gemini-4-hydrogen': {} },
+    { 'gemini-4-hydrogen-low': {} },
+    { 'publishers/google/models/gemini-4-hydrogen-xhigh': {} },
+    { 'provider-alias': { modelName: 'gemini-4-hydrogen-medium' } },
+  ])('discovers Hydrogen through grouped, tiered, and provider catalog IDs: %j', async models => {
+    const adapter = new AntigravityAdapter({
+      auth: { credential: vi.fn(async () => credential('access')) },
+      transport: { request: vi.fn(async () => new Response(JSON.stringify({ models }))) },
+    })
+
+    await expect(adapter.listModels(ANTIGRAVITY_PROVIDER).then(models => models.map(model => model.id)))
+      .resolves.toEqual(['antigravity-gemini-4-hydrogen'])
+    await expect(adapter.modelCatalog()).resolves.toMatchObject({
+      state: 'live-available',
+      models: expect.arrayContaining([
+        { id: 'antigravity-gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', state: 'live-available' },
+        { id: 'antigravity-gemini-4-argon', name: 'Gemini 4 Argon', state: 'unavailable' },
+      ]),
+    })
+  })
+
+  it.each([
+    { effort: undefined, tier: 'high', modelEnum: 'MODEL_PLACEHOLDER_M461', maxTokens: undefined, output: 65536 },
+    { effort: 'xhigh', tier: 'xhigh', modelEnum: 'MODEL_PLACEHOLDER_M464', maxTokens: undefined, output: 65536 },
+    { effort: 'low', tier: 'low', modelEnum: 'MODEL_PLACEHOLDER_M463', maxTokens: 1024, output: 1024 },
+  ])('streams Hydrogen with native $tier thinking and preserves output caps', async ({ effort, tier, modelEnum, maxTokens, output }) => {
+    const request = vi.fn(async (_input: PrivateTransportRequest) => new Response(
+      'data: {"response":{"parts":[{"text":"ok"}],"finishReason":"STOP"}}\n\n',
+    ))
+    const adapter = new AntigravityAdapter({
+      auth: { credential: vi.fn(async () => credential('access')) },
+      transport: { request },
+    })
+    const model = 'antigravity-gemini-4-hydrogen'
+    const resolved = await adapter.resolveModel(ANTIGRAVITY_PROVIDER, model)
+    expect(resolved).toMatchObject({
+      context: { contextWindow: 1048576 },
+      defaultMaxTokens: 65536,
+      reasoning: {
+        defaultEffort: 'high',
+        efforts: [
+          { id: 'low', name: 'Low' },
+          { id: 'medium', name: 'Medium' },
+          { id: 'high', name: 'High' },
+          { id: 'xhigh', name: 'Extra High' },
+        ],
+      },
+    })
+
+    const chunks = await collectThroughRuntime(adapter, options({
+      model,
+      ...(effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) }),
+      ...(maxTokens === undefined ? {} : { maxTokens }),
+    }))
+    expect(chunks).toContainEqual(expect.objectContaining({ type: 'text-delta', text: 'ok' }))
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    const body = JSON.parse(String(request.mock.calls[0]?.[0].body))
+    expect(body.model).toBe(`gemini-4-hydrogen-${tier}`)
+    expect(body.request.labels.model_enum).toBe(modelEnum)
+    expect(body.request.generationConfig).toEqual({
+      maxOutputTokens: output,
+      thinkingConfig: { includeThoughts: true, thinkingLevel: tier.toUpperCase() },
+    })
+  })
+
   it('uses Gemini 3.8 native medium as the public runtime default', async () => {
     const request = vi.fn(async (_input: PrivateTransportRequest) => new Response(
       'data: {"response":{"parts":[{"text":"ok"}],"finishReason":"STOP"}}\n\n',

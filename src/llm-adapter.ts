@@ -19,6 +19,7 @@ import {
   resolveModelWithTier,
   toGeminiSchema,
 } from '@cortexkit/antigravity-auth-core'
+import type { OpencodeModelDefinitions } from '@cortexkit/antigravity-auth-core'
 import * as dshLlm from '@deepseek-ai/dsh-llm'
 import {
   CONTEXT_WINDOW_EXCEEDED_CODE,
@@ -83,6 +84,16 @@ const MAX_PROVIDER_ERROR_BYTES = 64 * 1024
 const MAX_PROVIDER_ERROR_FRAME_BYTES = 16 * 1024
 const MAX_PROVIDER_ERROR_JSON_DEPTH = 8
 const MAX_PROVIDER_PARTS = 4096
+
+const HYDROGEN_MODEL_ID = 'antigravity-gemini-4-hydrogen'
+const HYDROGEN_MAX_OUTPUT_TOKENS = 65536
+// 官方 CLI 1.5.8 的 Gemini4Hydrogen 与 protobuf 枚举定义。
+const HYDROGEN_MODEL_ENUMS: Readonly<Record<string, string>> = {
+  'gemini-4-hydrogen-low': 'MODEL_PLACEHOLDER_M463',
+  'gemini-4-hydrogen-medium': 'MODEL_PLACEHOLDER_M462',
+  'gemini-4-hydrogen-high': 'MODEL_PLACEHOLDER_M461',
+  'gemini-4-hydrogen-xhigh': 'MODEL_PLACEHOLDER_M464',
+}
 
 export interface AntigravityAuthCredentialSource {
   credential(signal?: AbortSignal, options?: { readonly forceRefresh?: boolean; readonly family?: string }): Promise<HostCredential | undefined>
@@ -149,7 +160,22 @@ export class AntigravityAdapter extends LlmAdapter {
   private readonly options: Required<Pick<AntigravityAdapterOptions, 'idleTimeoutMs' | 'totalTimeoutMs' | 'maxResponseBytes' | 'maxFrameBytes'>> & {
     readonly responseHeaderTimeoutMs: number
   }
-  private readonly definitions = getPublicModelDefinitions()
+  private readonly definitions: OpencodeModelDefinitions = {
+    ...getPublicModelDefinitions(),
+    [HYDROGEN_MODEL_ID]: {
+      id: HYDROGEN_MODEL_ID,
+      name: 'Gemini 4 Hydrogen (Antigravity)',
+      release_date: '2026-11-12',
+      attachment: true,
+      reasoning: true,
+      temperature: true,
+      tool_call: true,
+      limit: { context: 1048576, output: HYDROGEN_MAX_OUTPUT_TOKENS },
+      modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+      cost: { input: 0, output: 0 },
+      options: {},
+    },
+  }
   private catalogProjectId: string | undefined
   private catalogExpiresAt = 0
   private catalogModelIds = new Set<string>()
@@ -627,6 +653,17 @@ function cleanModelDisplayName(name: string): string {
 
 function getModelReasoningEfforts(modelId: string): { efforts: readonly { id: ReturnType<typeof ReasoningEffortId>; name: string }[]; defaultEffort: ReturnType<typeof ReasoningEffortId> } | undefined {
   const lower = modelId.toLowerCase()
+  if (modelId === HYDROGEN_MODEL_ID) {
+    return {
+      efforts: [
+        { id: ReasoningEffortId('low'), name: 'Low' },
+        { id: ReasoningEffortId('medium'), name: 'Medium' },
+        { id: ReasoningEffortId('high'), name: 'High' },
+        { id: ReasoningEffortId('xhigh'), name: 'Extra High' },
+      ],
+      defaultEffort: ReasoningEffortId('high'),
+    }
+  }
   if (lower.includes('gemini-4-argon') || (lower.includes('flash') && !lower.includes('image'))) {
     return {
       efforts: [
@@ -653,7 +690,7 @@ function getModelReasoningEfforts(modelId: string): { efforts: readonly { id: Re
 }
 
 function createCatalogView(
-  definitions: ReturnType<typeof getPublicModelDefinitions>,
+  definitions: OpencodeModelDefinitions,
   state: AntigravityModelCatalogState,
   available?: ReadonlySet<string>,
   checkedAt?: string,
@@ -680,7 +717,7 @@ function cloneCatalogView(value: AntigravityModelCatalogView): AntigravityModelC
 
 function parseLiveModelIds(
   value: unknown,
-  definitions: ReturnType<typeof getPublicModelDefinitions>,
+  definitions: OpencodeModelDefinitions,
 ): Set<string> {
   const root = isRecord(value) && isRecord(value.response) ? value.response : value
   if (!isRecord(root) || !isRecord(root.models)) throw new LlmError('The Antigravity live model catalog did not match the audited schema', 'PROTOCOL_DRIFT')
@@ -693,6 +730,7 @@ function parseLiveModelIds(
     const cleanId = cleanModelId(id)
     live.add(canonicalWireModel(cleanId, aliases))
     live.add(cleanId)
+    if (HYDROGEN_MODEL_ENUMS[cleanId] !== undefined) live.add('gemini-4-hydrogen')
     live.add(id)
     if (cleanId === 'gemini-3-flash' || cleanId === 'gemini-3-flash-agent' || cleanId.startsWith('gemini-3-flash') || cleanId.startsWith('gemini-3.5-flash')) {
       live.add('gemini-3.5-flash')
@@ -729,6 +767,7 @@ function parseLiveModelIds(
       const cleanName = cleanModelId(rawEntry.modelName)
       live.add(canonicalWireModel(cleanName, aliases))
       live.add(cleanName)
+      if (HYDROGEN_MODEL_ENUMS[cleanName] !== undefined) live.add('gemini-4-hydrogen')
     }
     if (rawEntry.displayName !== undefined && (typeof rawEntry.displayName !== 'string' || rawEntry.displayName.length > 512 || containsControl(rawEntry.displayName))) {
       throw new LlmError('The Antigravity live model catalog did not match the audited schema', 'PROTOCOL_DRIFT')
@@ -736,7 +775,7 @@ function parseLiveModelIds(
   }
   const available = new Set<string>()
   for (const definition of Object.values(definitions)) {
-    const resolved = resolveModelWithTier(definition.id).actualModel
+    const resolved = resolveWireModel(definition.id)
     const cleanResolved = cleanModelId(resolved)
     const canonical = canonicalWireModel(cleanResolved, aliases)
     if (
@@ -744,6 +783,7 @@ function parseLiveModelIds(
       || live.has(cleanResolved)
       || live.has(resolved)
       || live.has(definition.id)
+      || (definition.id === HYDROGEN_MODEL_ID && live.has('gemini-4-hydrogen'))
       || (definition.id === 'antigravity-gemini-3.5-flash' && (
         live.has('gemini-3-flash')
         || live.has('gemini-3-flash-agent')
@@ -1006,6 +1046,8 @@ async function buildAntigravityGeneratePayloadForAdapter(
   const metadata = buildAgyAgentRequestMetadata(session, payload.request as Record<string, unknown>, resolveWireModel(options.model, options.reasoningEffort), timestamp)
   const request = payload.request as Record<string, unknown>
   request.labels = metadata.labels
+  const hydrogenModelEnum = HYDROGEN_MODEL_ENUMS[String(payload.model)]
+  if (hydrogenModelEnum !== undefined) metadata.labels.model_enum = hydrogenModelEnum
   request.sessionId = metadata.sessionId
   orderAgyRequestPayloadInPlace(request)
   return {
@@ -1052,6 +1094,7 @@ function buildPayloadFromContents(
   contents: readonly Record<string, unknown>[],
 ): Record<string, unknown> {
   const wireModel = resolveWireModel(options.model, options.reasoningEffort)
+  const isHydrogen = HYDROGEN_MODEL_ENUMS[wireModel] !== undefined
   const usesCapturedGemini38ThinkingBudget = /^gemini-3\.8-flash-(?:low|medium|high)$/u.test(wireModel)
   const requestContents = groupClaudeFunctionResponses(contents, options.model)
   const request: Record<string, unknown> = { contents: requestContents }
@@ -1078,7 +1121,7 @@ function buildPayloadFromContents(
   const tieredModel = resolveModelForTier(options.model, options.reasoningEffort)
   const resolved = resolveModelWithTier(usesCapturedGemini38ThinkingBudget ? wireModel : tieredModel)
   const nativeModel = getAgyNativeModel(wireModel)
-  const usesAdaptiveNativeThinking = isGeminiArgonModel(wireModel) || nativeModel?.supportsAdaptiveThinking === true
+  const usesAdaptiveNativeThinking = isHydrogen || isGeminiArgonModel(wireModel) || nativeModel?.supportsAdaptiveThinking === true
   const usesNumericGeminiThinkingBudget = !wireModel.toLowerCase().includes('claude') && !usesAdaptiveNativeThinking && typeof resolved.thinkingBudget === 'number'
   const requestedEffort = normalizeReasoningEffort(options.reasoningEffort)
   const thinkingLevel = requestedEffort ?? resolved.thinkingLevel
@@ -1104,7 +1147,15 @@ function buildPayloadFromContents(
     })
     if (usesAdaptiveNativeThinking) {
       const transformedConfig = isRecord(request.generationConfig) ? request.generationConfig : {}
-      applyAgyNativeGenerationConfig(wireModel, transformedConfig)
+      if (isHydrogen) {
+        transformedConfig.maxOutputTokens ??= HYDROGEN_MAX_OUTPUT_TOKENS
+        transformedConfig.thinkingConfig = {
+          includeThoughts: true,
+          thinkingLevel: wireModel.slice('gemini-4-hydrogen-'.length).toUpperCase(),
+        }
+      } else {
+        applyAgyNativeGenerationConfig(wireModel, transformedConfig)
+      }
       request.generationConfig = transformedConfig
     } else if (usesNumericGeminiThinkingBudget && typeof resolved.thinkingBudget === 'number') {
       const transformedConfig = isRecord(request.generationConfig) ? request.generationConfig : {}
@@ -1527,6 +1578,10 @@ function resolveModelForTier(model: string, reasoningEffort?: GenerateOptions['r
 }
 
 function resolveWireModel(model: string, reasoningEffort?: GenerateOptions['reasoningEffort']): string {
+  if (model === HYDROGEN_MODEL_ID) {
+    const effort = reasoningEffort === 'xhigh' ? 'xhigh' : normalizeReasoningEffort(reasoningEffort)
+    return `gemini-4-hydrogen-${effort ?? 'high'}`
+  }
   const routeModel = resolveModelForTier(model, reasoningEffort)
   return resolveModelWithTier(routeModel).actualModel
 }

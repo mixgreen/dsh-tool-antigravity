@@ -1,5 +1,4 @@
 import { defineConfig } from 'tsdown'
-import { clientBundle } from './build/client-bundle.ts'
 
 const packageName = 'dsh-tool-antigravity'
 
@@ -34,5 +33,22 @@ export default defineConfig([
       neverBundle: [/^@deepseek-ai\//, /^@cortexkit\//],
     },
   },
-  clientBundle(packageName),
+  {
+    name: `${packageName}/client`,
+    entry: { client: 'src/client/index.ts' },
+    outDir: 'lib',
+    format: ['cjs'],
+    platform: 'browser',
+    target: 'es2024',
+    tsconfig: 'tsconfig.client.json',
+    fixedExtension: true,
+    dts: false,
+    clean: false,
+    sourcemap: true,
+    deps: {
+      neverBundle: [/^@deepseek-ai\//, /^react(?:\/|$)/],
+    },
+    banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(packageName)}, factory: (require) => {\nvar module = { exports: {} }; var exports = module.exports;`,
+    footer: 'return module.exports;\n} });',
+  },
 ])

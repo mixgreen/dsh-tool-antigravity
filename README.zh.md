@@ -14,6 +14,14 @@
 
 ---
 
+## V 0.6.0 版本重要更新
+
+- **新增 Gemini 4 Hydrogen**：模型标识为 `antigravity-gemini-4-hydrogen`，支持 `low`、`medium`、`high` 和 `xhigh`（Extra High），默认 `high`。
+- **完整接入模型目录与流式生成**：识别账号目录中的基础及分档模型 ID，保留调用方输出上限，并使用官方 CLI 1.5.8 的四档路由和模型标签。上下文窗口为 1,048,576 token，单次输出上限为 65,536 token；实际可用性取决于账号目录。
+- **修复干净检出的构建**：将缺失的浏览器打包配置内联，保留 DSH 模块注册格式及共享 React。
+
+模型档位依据：[Google Antigravity 模型文档](https://antigravity.google/docs/models/)。
+
 ## v0.5.3 版本重要更新
 
 - **修复 Claude VALIDATED 模式下 `anyOf` / `oneOf` 工具 Schema 校验报错 (解决 #12 / PR #13)**：彻底解决 `antigravity-claude-opus-5-5` 与 `antigravity-claude-sonnet-5-5` 在挂载含 `anyOf` 或 `oneOf` 联合类型的工具（如本插件自带的 `generate_image` 引用项、DSH 内置的定时任务、任务看板及 MCP 工具等）时触发 HTTP 400 `PROTOCOL_DRIFT` 的问题。
@@ -33,6 +41,7 @@
 ### 2. 支持的模型列表 (`google-antigravity`)
 | 模型标识符 | 显示名称 | 核心模态 | 思考预算支持 |
 | :--- | :--- | :--- | :--- |
+| `antigravity-gemini-4-hydrogen` | Gemini 4 Hydrogen | 文本, 视觉, 工具 | Low / Medium / High（默认）/ Extra High |
 | `antigravity-gemini-4-argon` | Gemini 4 Argon | 文本, 视觉, 工具 | Low / Medium / High |
 | `antigravity-gemini-3.8-flash` | Gemini 3.8 Flash | 文本, 视觉, 工具 | Low / Medium / High |
 | `antigravity-gemini-3.5-flash` | Gemini 3.5 Flash | 文本, 视觉, 工具 | Low / Medium / High |

@@ -14,6 +14,14 @@ Provides private Google OAuth 2.0 PKCE authentication, smart multi-account pooli
 
 ---
 
+## Highlights in V 0.6.0
+
+- **Gemini 4 Hydrogen**: Added `antigravity-gemini-4-hydrogen` with `low`, `medium`, `high` (default), and `xhigh` (Extra High) reasoning efforts.
+- **Model discovery and streaming**: Recognizes grouped and tiered account catalog IDs, preserves caller output caps, and uses the four wire routes and model labels from the official CLI 1.5.8. Supports a 1,048,576-token context window and up to 65,536 output tokens per request; availability follows the account catalog.
+- **Clean-checkout builds**: Inlined the missing browser bundle configuration while preserving DSH module registration and shared React.
+
+Thinking levels: [Google Antigravity model documentation](https://antigravity.google/docs/models/).
+
 ## Highlights in v0.5.3
 
 - **Normalize `anyOf` / `oneOf` Tool Schemas for Claude VALIDATED Mode (Fixes #12 / PR #13)**: Resolved HTTP 400 `PROTOCOL_DRIFT` error on `antigravity-claude-opus-5-5` and `antigravity-claude-sonnet-5-5` when tool definitions contain `anyOf` or `oneOf` unions (such as `generate_image.references.items`, DSH built-in `schedule_*`, `task_board_update`, or MCP tools).
@@ -33,6 +41,7 @@ Provides private Google OAuth 2.0 PKCE authentication, smart multi-account pooli
 ### 2. Supported Models (`google-antigravity`)
 | Model Identifier | Display Name | Capabilities | Thinking Budget |
 | :--- | :--- | :--- | :--- |
+| `antigravity-gemini-4-hydrogen` | Gemini 4 Hydrogen | Text, Vision, Tools | Low / Medium / High (default) / Extra High |
 | `antigravity-gemini-4-argon` | Gemini 4 Argon | Text, Vision, Tools | Low / Medium / High |
 | `antigravity-gemini-3.8-flash` | Gemini 3.8 Flash | Text, Vision, Tools | Low / Medium / High |
 | `antigravity-gemini-3.5-flash` | Gemini 3.5 Flash | Text, Vision, Tools | Low / Medium / High |
