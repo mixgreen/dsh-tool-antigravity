@@ -3,7 +3,7 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { createAntigravityAuthRpcClient } from '../rpc-contract.ts'
@@ -20,7 +20,7 @@ export { en, zh } from './locales.ts'
 export type { AntigravityAuthKey } from './locales.ts'
 
 /** Client services required by the settings section and its loopback RPC. */
-export const inject = ['slots', 'locale', 'connection', 'configForms']
+export const inject = ['slots', 'locale', 'connection', 'settingsScope']
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** Copy for the Antigravity bootstrap settings section. */
@@ -38,13 +38,10 @@ export function apply(ctx: ClientContext): void {
       call: async () => ({ ok: false, error: { code: 'disconnected', message: 'Not connected', details: {} } }),
     })
     const t = (ctx.locale?.bind ? ctx.locale.bind(NS) : ((key: AntigravityAuthKey) => zh[key] ?? key)) as AntigravityAuthSettingsProps['t']
-    const context = ctx as ClientContext & {
-      configForms?: { get<T>(namespace: string): unknown }
-    }
-    const imageScope = (context.configForms?.get
-      ? context.configForms.get('antigravity-image')
-      : undefined
-    ) as SettingsScope<AntigravityImageSettings> | undefined
+    const imageScope = ctx.settingsScope.bind<AntigravityImageSettings>({
+      namespace: 'antigravity-image',
+      decode: decodeImageSettings,
+    })
     const listeners = new Set<() => void>()
     const subscribe = (listener: () => void): (() => void) => {
       listeners.add(listener)

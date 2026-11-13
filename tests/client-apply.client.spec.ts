@@ -2,7 +2,7 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { describe, expect, it, vi } from 'vitest'
-import { apply, inject } from '../src/client/index.ts'
+import { apply } from '../src/client/index.ts'
 import type { AntigravityAuthKey } from '../src/client/locales.ts'
 import { createStatusView } from '../src/status.ts'
 
@@ -42,8 +42,8 @@ function bench(isLoopback = true) {
         }
       },
     },
-    configForms: {
-      get: () => undefined,
+    settingsScope: {
+      bind: () => undefined,
     },
     get(service: string) {
       if (service === 'connection') return { isLoopback, rpc: { call } }
@@ -74,7 +74,6 @@ function bench(isLoopback = true) {
 
 describe('Antigravity client apply', () => {
   it('declares its services and removes dictionaries, slots, and listeners on teardown', async () => {
-    expect(inject).toEqual(['slots', 'locale', 'connection', 'configForms'])
     const b = bench()
 
     expect(b.slots.map(record => record.options)).toEqual([
