@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Verify the private Wire Identity package shape without installing or publishing it. */
 import { DSH_PEER_RANGE, DSH_VERIFY_VERSION, resolvedDshPackages } from './dsh-compatibility.mjs'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -29,9 +29,8 @@ try {
   if (dshGraph.length === 0 || dshGraph.some(entry => entry.version !== DSH_VERIFY_VERSION)) {
     throw new Error('package smoke: DSH lockfile is not one coherent verified graph')
   }
-  const changelog = await readFile(resolve(packageRoot, 'CHANGELOG.md'), 'utf8')
-  if (!changelog.includes(`## [${String(manifest.version)}]`)) {
-    throw new Error(`package smoke: CHANGELOG.md lacks release ${String(manifest.version)}`)
+  if (manifest.engines?.dsh !== DSH_VERIFY_VERSION) {
+    throw new Error('package smoke: bundle does not declare the verified DSH version')
   }
   const retiredPackages = new Set([
     '@deepseek-ai/dsh-client-runtime',
@@ -44,19 +43,19 @@ try {
   }
   const clientInject = manifest.dsh?.client?.inject
   if (!Array.isArray(clientInject) || clientInject.some(dependency => retiredPackages.has(dependency))) {
-    throw new Error('package smoke: client injection retains a removed alpha.5 package')
+    throw new Error('package smoke: client injection retains a removed DSH package')
   }
   for (const [dependency, range] of Object.entries(manifest.peerDependencies ?? {})) {
     if (dependency.startsWith('@deepseek-ai/dsh-') && range !== DSH_PEER_RANGE) {
-      throw new Error(`package smoke: ${dependency} does not declare an unlocked DSH peer range`)
+      throw new Error(`package smoke: ${dependency} does not declare the verified DSH peer range`)
     }
   }
-  if (manifest.peerDependencies?.['@deepseek-ai/cordis'] !== '^4.0.2'
-    || manifest.peerDependencies?.['@deepseek-ai/schemastery'] !== '^3.18.2') {
-    throw new Error('package smoke: Cordis or Schemastery peer baseline is not alpha.5-coherent')
+  if (manifest.peerDependencies?.['@deepseek-ai/cordis'] !== '^4.1.0'
+    || manifest.peerDependencies?.['@deepseek-ai/schemastery'] !== '^3.19.0') {
+    throw new Error('package smoke: Cordis or Schemastery peer baseline is does not match the target DSH')
   }
   const patch = await readFile(resolve(packageRoot, 'cordis.patch.yml'), 'utf8')
-  for (const row of ['antigravity-auth', 'antigravity-search', 'antigravity-image', 'antigravity-video']) {
+  for (const row of ['antigravity-auth', 'antigravity-image']) {
     if (!patch.includes(`id: ${row}`)) throw new Error(`package smoke: patch lacks independent row ${row}`)
   }
   if (patch.includes('deepseek-harness')) throw new Error('package smoke: patch unexpectedly mentions DSH core')
@@ -64,9 +63,7 @@ try {
   for (const key of [
     '.',
     './client',
-    './search',
     './image',
-    './video',
     './rpc-contract',
     './project-context',
     './wire-identity',
@@ -76,7 +73,6 @@ try {
     './replay',
     './quota',
     './media-admission',
-    './live-gates',
   ]) {
     const target = manifest.exports?.[key]?.default
     const types = manifest.exports?.[key]?.types
@@ -100,34 +96,11 @@ try {
       if (key === './media-admission' && typeof loaded.admitWorkspaceImage !== 'function') {
         throw new Error('package smoke: media-admission export has no workspace admission')
       }
-      if (key === './live-gates' && typeof loaded.runLiveGateCli !== 'function') {
-        throw new Error('package smoke: live-gates export has no opt-in CLI boundary')
-      }
     }
   }
-  await access(resolve(packageRoot, 'lib/live-gate-runner.js'))
-  const packedLiveGateCli = resolve(packageRoot, 'scripts/live-gates.mjs')
-  await access(packedLiveGateCli)
-  const cliEnvironment = { ...process.env }
-  delete cliEnvironment.DSH_ANTIGRAVITY_LIVE_ACK
-  const cliProbe = spawnSync(process.execPath, [packedLiveGateCli, '--gate', 'S'], {
-    cwd: packageRoot,
-    encoding: 'utf8',
-    env: cliEnvironment,
-  })
-  if (cliProbe.status !== 2 || !cliProbe.stderr.includes('explicit acknowledgement')) {
-    throw new Error('package smoke: packed live gate CLI did not enforce inert dual opt-in')
-  }
-  const liveGateSource = await readFile(resolve(packageRoot, 'lib/live-gates.js'), 'utf8')
-  if (!liveGateSource.includes('live-gate-runner.js')) throw new Error('package smoke: live gate CLI cannot load its packed production runner')
-  const liveGateRunnerSource = await readFile(resolve(packageRoot, 'lib/live-gate-runner.js'), 'utf8')
-  for (const marker of ['live-sha256-', 'gemini', 'claude', 'gpt-oss', 'KUMQUAT']) {
-    if (!liveGateRunnerSource.includes(marker)) throw new Error(`package smoke: packed live gate runner lacks ${marker}`)
-  }
-
   const hostEntrySource = await readFile(resolve(packageRoot, 'lib/index.js'), 'utf8')
   if (!hostEntrySource.includes('loopback-required')) {
-    throw new Error('package smoke: Host entry lacks the alpha.5 account RPC guard')
+    throw new Error('package smoke: Host entry lacks the loopback account RPC guard')
   }
   for (const marker of ['dsh-client-runtime', 'dsh-host-apiproxy']) {
     if (hostEntrySource.includes(marker)) throw new Error(`package smoke: Host entry retains ${marker}`)
@@ -166,7 +139,7 @@ try {
     throw new Error('package smoke: client factory did not expose an apply function')
   }
 
-  console.log(`package smoke: ${filename} exposes private Host/client entries, project discovery, an inert packed live-gate CLI, fixed Wire Identity, and value-free types`)
+  console.log(`package smoke: ${filename} exposes private Host/client entries, project discovery, Wire Identity, and value-free types`)
 } finally {
   await rm(temporary, { recursive: true, force: true })
 }

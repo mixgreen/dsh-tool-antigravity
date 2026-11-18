@@ -1,13 +1,15 @@
 /** Plugin-owned account RPC carried by Connection's authenticated /api routes. */
 import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection'
-import type { HostConnectionHandle, ConnectionRpcHandler } from '@deepseek-ai/dsh-client-connection'
+import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
+
+import type { AccountRouteHandler } from './loopback-rpc.ts'
 
 /** Register exact routes without creating a separate physical RPC carrier. */
 export function registerAccountRoutes(
   connection: HostConnectionHandle,
   namespace: string,
   endpoints: readonly string[],
-  handler: ConnectionRpcHandler,
+  handler: AccountRouteHandler,
 ): () => Promise<void> {
   const disposers = endpoints.map(endpoint => connection.fetch.register({
     path: `/api/${namespace}/${endpoint}`,

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime, { CONTEXT_WINDOW_EXCEEDED_CODE, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { AttachmentError, AttachmentId, ImageVariantId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import LlmRuntime, { CONTEXT_WINDOW_EXCEEDED_CODE, MessageId, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, Message, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { AntigravityAdapter, ANTIGRAVITY_AVAILABLE_MODELS_ENDPOINT, ANTIGRAVITY_PROVIDER, buildAntigravityGeneratePayload } from '../src/llm-adapter.ts'
 import type { HostCredential } from '../src/credential-coordinator.ts'
@@ -180,10 +181,10 @@ describe('Antigravity LLM adapter', () => {
 
   it('replays Claude tool calls and results with matching ids while dropping unsigned reasoning', async () => {
     const model = 'antigravity-claude-opus-5-5'
-    const bashCallId = 'toolu_vrtx_bash'
-    const globCallId = 'toolu_vrtx_glob'
+    const bashCallId = ToolCallId('toolu_vrtx_bash')
+    const globCallId = ToolCallId('toolu_vrtx_glob')
     const assistant = {
-      id: 'assistant-tools',
+      id: MessageId('assistant-tools'),
       role: 'assistant',
       source: {
         kind: 'model',
@@ -202,9 +203,10 @@ describe('Antigravity LLM adapter', () => {
     } as Message
     const result = (id: string, name: string, text: string): Message => ({
       id: `result-${name}` as never,
-      role: 'user',
+      role: 'tool',
       source: { kind: 'tool', callId: id as never },
-      content: [{ type: 'tool-result', toolCallId: id as never, content: [{ type: 'text', text }] }],
+      toolCallId: id as never,
+      content: [{ type: 'text', text }],
     })
     const request = vi.fn(async (input: PrivateTransportRequest) => {
       const payload = JSON.parse(String(input.body)) as {
@@ -981,20 +983,49 @@ describe('Antigravity LLM adapter', () => {
     }
   })
 
+  it('uses the Host request image variant and preserves attachment failure codes', async () => {
+    const attachment: ImageAttachmentRef = {
+      attachmentId: AttachmentId('image-id'), mediaType: 'image/png', bytes: 30, width: 20, height: 10,
+    }
+    const signal = new AbortController().signal
+    const readImageRequest = vi.fn().mockResolvedValueOnce({
+      variantId: ImageVariantId('variant-id'), attachment, data: new Uint8Array([1, 2, 3]),
+      mediaType: 'image/jpeg', bytes: 3, width: 20, height: 10, depth: 'uchar', space: 'srgb', hasAlpha: false,
+    }).mockRejectedValueOnce(new AttachmentError('Image not found', 'ATTACHMENT_NOT_FOUND'))
+    const request = vi.fn(async (input: PrivateTransportRequest) => {
+      expect(JSON.parse(String(input.body)).request.contents[0].parts).toEqual([
+        { inlineData: { mimeType: 'image/jpeg', data: 'AQID' } },
+      ])
+      return new Response('data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n')
+    })
+    const adapter = new AntigravityAdapter({
+      auth: { credential: async () => credential('access') },
+      attachments: { readImageRequest, imageHostPath: () => undefined },
+      transport: { request },
+    })
+    const input = options({ signal, messages: [{ role: 'user', content: [{ type: 'image', attachment }] }] })
+
+    await collect(adapter.stream(input))
+    expect(readImageRequest).toHaveBeenCalledWith(attachment, { width: 20, height: 10, maxBytes: 1024 * 1024 }, signal)
+    await expect(collect(adapter.stream(input))).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' })
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
   it('replays tool results with the original function name correlated by call id', () => {
-    const toolCallId = 'call-7'
+    const toolCallId = ToolCallId('call-7')
     const request = options({ messages: [
       {
-        id: 'assistant-1',
+        id: MessageId('assistant-1'),
         role: 'assistant',
         source: { kind: 'model', provider: ANTIGRAVITY_PROVIDER, model: 'antigravity-gemini-3.8-flash' },
         content: [{ type: 'tool-call', id: toolCallId, name: 'lookup_weather', arguments: '{"city":"Paris"}' }],
       } as Message,
       {
-        id: 'tool-1',
-        role: 'user',
+        id: MessageId('tool-1'),
+        role: 'tool',
         source: { kind: 'tool', callId: toolCallId },
-        content: [{ type: 'tool-result', toolCallId, content: [{ type: 'text', text: 'sunny' }] }],
+        toolCallId: toolCallId,
+        content: [{ type: 'text', text: 'sunny' }],
       } as Message,
     ] })
 
@@ -1014,9 +1045,10 @@ describe('Antigravity LLM adapter', () => {
     } as Message)
     const result = (name: string, text: string): Message => ({
       id: `result-${name}` as never,
-      role: 'user',
+      role: 'tool',
       source: { kind: 'tool', callId: reusedCallId as never },
-      content: [{ type: 'tool-result', toolCallId: reusedCallId as never, content: [{ type: 'text', text }] }],
+      toolCallId: reusedCallId as never,
+      content: [{ type: 'text', text }],
     } as Message)
 
     const payload = buildAntigravityGeneratePayload(options({ messages: [
@@ -1082,9 +1114,10 @@ describe('Antigravity LLM adapter', () => {
     } as Message)
     const result = (name: string, text: string): Message => ({
       id: `result-${name}` as never,
-      role: 'user',
+      role: 'tool',
       source: { kind: 'tool', callId: reusedCallId as never },
-      content: [{ type: 'tool-result', toolCallId: reusedCallId as never, content: [{ type: 'text', text }] }],
+      toolCallId: reusedCallId as never,
+      content: [{ type: 'text', text }],
     } as Message)
     const request = options({ model, messages: [
       assistant('grep', '{"pattern":"a"}'),
@@ -1114,9 +1147,10 @@ describe('Antigravity LLM adapter', () => {
     } as Message,
     {
       id: `result-${String(index)}-${name}` as never,
-      role: 'user',
+      role: 'tool',
       source: { kind: 'tool', callId: callId as never },
-      content: [{ type: 'tool-result', toolCallId: callId as never, content: [{ type: 'text', text: `${name}-${String(index)}` }] }],
+      toolCallId: callId as never,
+      content: [{ type: 'text', text: `${name}-${String(index)}` }],
     } as Message,
   ])
 
@@ -1168,9 +1202,10 @@ describe('Antigravity LLM adapter', () => {
     } as Message,
     ...names.map((name, index) => ({
       id: `result-${String(index)}-${name}` as never,
-      role: 'user',
+      role: 'tool',
       source: { kind: 'tool', callId: callId as never },
-      content: [{ type: 'tool-result', toolCallId: callId as never, content: [{ type: 'text', text: `${name}-${String(index)}` }] }],
+      toolCallId: callId as never,
+      content: [{ type: 'text', text: `${name}-${String(index)}` }],
     } as Message)),
   ]
 
@@ -1229,9 +1264,10 @@ describe('Antigravity LLM adapter', () => {
       assistant('edit'),
       {
         id: 'result-edit' as never,
-        role: 'user',
+        role: 'tool',
         source: { kind: 'tool', callId: reusedCallId as never },
-        content: [{ type: 'tool-result', toolCallId: reusedCallId as never, content: [{ type: 'text', text: 'edit-written' }] }],
+        toolCallId: reusedCallId as never,
+        content: [{ type: 'text', text: 'edit-written' }],
       } as Message,
     ]
 
@@ -1253,9 +1289,10 @@ describe('Antigravity LLM adapter', () => {
     } as Message)
     const result = (name: string, text: string): Message => ({
       id: `result-${name}` as never,
-      role: 'user',
+      role: 'tool',
       source: { kind: 'tool', callId: reusedCallId as never },
-      content: [{ type: 'tool-result', toolCallId: reusedCallId as never, content: [{ type: 'text', text }] }],
+      toolCallId: reusedCallId as never,
+      content: [{ type: 'text', text }],
     } as Message)
     const request = vi.fn(async () => new Response('data: {"response":{"parts":[{"text":"recovered"}],"finishReason":"STOP"}}\n\n'))
     const adapter = new AntigravityAdapter({

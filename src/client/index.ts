@@ -20,7 +20,7 @@ export { en, zh } from './locales.ts'
 export type { AntigravityAuthKey } from './locales.ts'
 
 /** Client services required by the settings section and its loopback RPC. */
-export const inject = ['slots', 'locale', 'connection', 'settingsScope']
+export const inject = ['slots', 'locale', 'connection', 'configForms']
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** Copy for the Antigravity bootstrap settings section. */
@@ -38,10 +38,7 @@ export function apply(ctx: ClientContext): void {
       call: async () => ({ ok: false, error: { code: 'disconnected', message: 'Not connected', details: {} } }),
     })
     const t = (ctx.locale?.bind ? ctx.locale.bind(NS) : ((key: AntigravityAuthKey) => zh[key] ?? key)) as AntigravityAuthSettingsProps['t']
-    const imageScope = ctx.settingsScope.bind<AntigravityImageSettings>({
-      namespace: 'antigravity-image',
-      decode: decodeImageSettings,
-    })
+    const imageForm = ctx.configForms.get<AntigravityImageSettings>('antigravity-image')
     const listeners = new Set<() => void>()
     const subscribe = (listener: () => void): (() => void) => {
       listeners.add(listener)
@@ -57,23 +54,9 @@ export function apply(ctx: ClientContext): void {
       id: 'antigravity-auth',
       order: 20,
       label: () => t('nav'),
-      inject: (): AntigravityAuthSettingsProps => ({ rpc, t, subscribe, imageScope }),
+      inject: (): AntigravityAuthSettingsProps => ({ rpc, t, subscribe, imageForm }),
     }, AntigravityAuthSettings))
   } catch (err) {
     console.error('[dsh-tool-antigravity] Failed in client apply:', err)
   }
-}
-
-function decodeImageSettings(value: unknown): AntigravityImageSettings | undefined {
-  if (!isRecord(value) || typeof value.enabled !== 'boolean' || typeof value.model !== 'string' || value.model.length === 0 || !positiveInteger(value.n) || value.n > 4) return undefined
-  return { enabled: value.enabled, model: value.model, n: value.n }
-}
-
-
-function positiveInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

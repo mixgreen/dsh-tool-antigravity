@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AntigravityAuthSettings } from '../src/client/AntigravityAuthSettings.tsx'
 import { en, zh } from '../src/client/locales.ts'
@@ -40,9 +40,9 @@ function rpcFixture(
   }
 }
 
-class ReceiverBoundSettingsScope<T> implements SettingsScope<T> {
+class ReceiverBoundConfigForm<T> implements ConfigForm<T> {
   private readonly listeners = new Set<() => void>()
-  private readonly snapshot: SettingsScopeSnapshot<T>
+  private readonly snapshot: ConfigFormSnapshot<T>
 
   constructor(value: T) {
     this.snapshot = {
@@ -52,11 +52,10 @@ class ReceiverBoundSettingsScope<T> implements SettingsScope<T> {
       user: undefined,
       revision: 1,
       writable: true,
-      mode: 'host',
     }
   }
 
-  getSnapshot(): SettingsScopeSnapshot<T> {
+  getSnapshot(): ConfigFormSnapshot<T> {
     return this.snapshot
   }
 
@@ -65,9 +64,9 @@ class ReceiverBoundSettingsScope<T> implements SettingsScope<T> {
     return () => { this.listeners.delete(listener) }
   }
 
-  async mutate(): Promise<void> {}
-  async set(): Promise<void> {}
-  async unset(): Promise<void> {}
+  async mutate(): Promise<boolean> { return true }
+  set = vi.fn(async (_field: string, _value: unknown): Promise<boolean> => true)
+  async unset(): Promise<boolean> { return true }
 }
 
 afterEach(() => {
@@ -97,23 +96,42 @@ describe('Antigravity bootstrap settings', () => {
     expect(unsubscribe).toHaveBeenCalledOnce()
   })
 
-  it('preserves the receiver when React subscribes to a Host SettingsScope', async () => {
-    const imageScope = new ReceiverBoundSettingsScope<AntigravityImageSettings>({
+  it('preserves the receiver when React subscribes to a Host ConfigForm', async () => {
+    const imageForm = new ReceiverBoundConfigForm<AntigravityImageSettings>({
       enabled: false,
       model: 'antigravity-gemini-3.1-flash-image',
       n: 1,
     })
 
+    const login: LoginStatusView = { phase: 'success', configured: true, projectAvailable: true }
+    const rpc = rpcFixture(login)
+    const passed = { outcome: 'passed', checkedAt: '2026-08-21T00:00:00.000Z' } as const
+    const status = createStatusView(false, login, undefined, undefined, {
+      gate0: passed,
+      capabilities: { image: passed },
+    })
+    vi.mocked(rpc.status).mockResolvedValue({ ok: true, value: { status } })
     render(
       <AntigravityAuthSettings
-        rpc={rpcFixture()}
+        rpc={rpc}
         t={key => en[key]}
         subscribe={() => () => {}}
-        imageScope={imageScope}
+        imageForm={imageForm}
       />,
     )
 
-    expect(await screen.findByRole('heading', { name: en.title })).toBeTruthy()
+    const toggle = screen.getByRole('checkbox', { name: en.toggleImage })
+    expect(toggle).toHaveProperty('checked', false)
+    await waitFor(() => expect(toggle).toHaveProperty('disabled', false))
+    imageForm.set.mockRejectedValueOnce(new Error('disconnected'))
+    fireEvent.click(toggle)
+    expect(imageForm.set).toHaveBeenCalledExactlyOnceWith('enabled', true)
+    expect((await screen.findByRole('alert')).textContent).toBe(en.imageSaveFailed)
+    expect(toggle).toHaveProperty('checked', false)
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(imageForm.set).toHaveBeenCalledTimes(2)
   })
 
   it('renders Host-only logout controls', async () => {

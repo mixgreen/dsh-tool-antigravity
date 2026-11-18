@@ -55,7 +55,7 @@ export function apply(ctx: Context, config: AntigravityAuthConfig = {}): void {
       listProviders?: () => readonly { id: string }[]
       registerAdapter?: (providers: string[], adapter: AntigravityAdapter) => (() => void) & { replace?: (providers: string[]) => void }
     }
-    attachments?: Pick<AttachmentStore, 'readImage'>
+    attachments?: Pick<AttachmentStore, 'imageHostPath' | 'readImageRequest'>
     reflect?: { get?: (name: string, required?: boolean) => unknown }
   }
   /** fs is optional: a mounted filesystem only enriches offload placeholders with a recovery path. */

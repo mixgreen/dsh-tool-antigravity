@@ -1,6 +1,9 @@
 /** Static fail-closed guard for account RPC after DSH removed per-channel authority. */
 
-import type { ConnectionRpcHandler, ConnectionRpcResult } from '@deepseek-ai/dsh-client-connection'
+import type { ConnectionRpcHandlerResult, ConnectionRpcResult } from '@deepseek-ai/dsh-client-connection'
+
+/** Exact Fetch routes are already admitted by Connection and do not receive a Peer. */
+export type AccountRouteHandler = (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<ConnectionRpcHandlerResult>
 
 export type LoopbackRpcMode = 'enabled' | 'blocked'
 
@@ -8,7 +11,7 @@ export interface LoopbackRpcGuard {
   /** Why the guarded handler is available or blocked for this Host composition. */
   readonly mode: LoopbackRpcMode
   /** Handler safe to register on the public Connection service. */
-  readonly handler: ConnectionRpcHandler
+  readonly handler: AccountRouteHandler
 }
 
 export const LOOPBACK_REQUIRED_MESSAGE = 'Antigravity account controls require a loopback-bound DSH Host'
@@ -20,7 +23,7 @@ export const LOOPBACK_REQUIRED_MESSAGE = 'Antigravity account controls require a
  * owned carrier.
  *
  * This is a Host activation policy, not a per-request source check. DSH
- * 0.1.2-alpha.5 exposes no public method-level or carrier authority context.
+ * Connection separately restricts exact Fetch routes to owner Peers.
  */
 export function loopbackMode(webServerHost: string | undefined): LoopbackRpcMode {
   return webServerHost === '127.0.0.1' ? 'enabled' : 'blocked'
@@ -34,7 +37,7 @@ export const ACCOUNT_COMMAND_DENIED_MESSAGE = 'Antigravity account commands requ
  * command is the local-terminal login entry point: a composition with no
  * WebServer can only dispatch through local UI adapters, and a loopback-bound
  * WebServer is the same machine, so both are enabled. Any other WebServer bind
- * exposes the shared commands seam to remote callers, and DSH 0.1.2-alpha.5
+ * exposes the shared commands seam to remote callers, and account
  * command invocations carry no caller/carrier authority with which to exempt
  * the local terminal, so those compositions fail closed for every caller.
  *
@@ -52,7 +55,7 @@ export function commandAccountMode(webServer: { readonly host?: string } | undef
  */
 export function createLoopbackRpcGuard(
   webServerHost: string | undefined,
-  delegate: ConnectionRpcHandler,
+  delegate: AccountRouteHandler,
 ): LoopbackRpcGuard {
   if (loopbackMode(webServerHost) === 'blocked') {
     return {

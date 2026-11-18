@@ -64,19 +64,18 @@ Thinking levels: [Google Antigravity model documentation](https://antigravity.go
 
 ## Installation
 
-### Install from GitHub Releases (recommended)
+### Build and install for DSH 0.2.2-rc.3
 
-This fork ships `.tgz` assets, not the upstream npm package of the same name. Requires Node.js 22.19+ (or 24+) and the DSH 0.1.5-rc.1 Host APIs; upgrade older DSH installations first.
-
-```sh
-dsh plugin --profile web add https://github.com/mixgreen/dsh-tool-antigravity/releases/download/V0.6.1/dsh-tool-antigravity-0.6.1.tgz
-```
-
-Alternatively, download the archive from [Release V0.6.1](https://github.com/mixgreen/dsh-tool-antigravity/releases/tag/V0.6.1):
+This branch targets DSH `0.2.2-rc.3` and requires Node.js `>=24.9.0` plus pnpm. The existing [V0.6.1 release](https://github.com/mixgreen/dsh-tool-antigravity/releases/tag/V0.6.1) targets the older DSH `0.1.5-rc.1`; build this branch for the current host.
 
 ```sh
-dsh plugin --profile web add /absolute/path/dsh-tool-antigravity-0.6.1.tgz
+pnpm install --frozen-lockfile
+pnpm build
+npm pack
+dsh plugin --profile web add /absolute/path/dsh-tool-antigravity-0.6.2.tgz
 ```
+
+For the Desktop host, use Plugin Manager to install the built `.tgz`, or replace `web` with `desktop` in the CLI command.
 
 Restart DSH after installation. The plugin manager activates authentication, model routing, and image tools through `dsh.bundle`; do not add duplicate plugin rows manually. Google sign-in is still required on first use. Install a new Release URL to upgrade this fork, rather than switching to upstream npm with `pnpm update dsh-tool-antigravity --latest`.
 

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { AntigravityAuthRpcClient } from '../rpc-contract.ts'
 import type { QuotaStatusView } from '../quota.ts'
 import type { AntigravityImageSettings } from '../image.ts'
@@ -20,18 +20,17 @@ export interface AntigravityAuthSettingsProps {
   rpc: AntigravityAuthRpcClient
   t: (key: AntigravityAuthKey) => string
   subscribe: (listener: () => void) => () => void
-  imageScope?: SettingsScope<AntigravityImageSettings> | undefined
+  imageForm?: ConfigForm<AntigravityImageSettings> | undefined
 }
 
 type LoadState = 'loading' | 'ready' | 'error'
-type BooleanSettings = { readonly enabled: boolean }
-type SettingsSnapshot = ReturnType<SettingsScope<BooleanSettings>['getSnapshot']>
-const EMPTY_SETTINGS_SNAPSHOT: SettingsSnapshot = { status: 'unavailable', value: undefined, base: undefined, user: undefined, revision: undefined, writable: false, mode: 'memory' }
+type ImageSettingsSnapshot = ConfigFormSnapshot<AntigravityImageSettings>
+const EMPTY_SETTINGS_SNAPSHOT: ImageSettingsSnapshot = { status: 'unavailable', value: undefined, base: undefined, user: undefined, revision: undefined, writable: false }
 
-function useCapabilitySettings<T extends BooleanSettings>(scope: SettingsScope<T> | undefined): SettingsSnapshot & { readonly value: T | undefined } {
-  const subscribe = useCallback((listener: () => void) => scope?.subscribe(listener) ?? (() => {}), [scope])
-  const getSnapshot = useCallback(() => scope?.getSnapshot() ?? EMPTY_SETTINGS_SNAPSHOT, [scope])
-  return useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_SETTINGS_SNAPSHOT) as SettingsSnapshot & { readonly value: T | undefined }
+function useImageSettings(form: ConfigForm<AntigravityImageSettings> | undefined): ImageSettingsSnapshot {
+  const subscribe = useCallback((listener: () => void) => form?.subscribe(listener) ?? (() => {}), [form])
+  const getSnapshot = useCallback(() => form?.getSnapshot() ?? EMPTY_SETTINGS_SNAPSHOT, [form])
+  return useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_SETTINGS_SNAPSHOT)
 }
 
 function useUnmountSignal(): () => AbortSignal {
@@ -45,9 +44,10 @@ function useUnmountSignal(): () => AbortSignal {
 }
 
 /** One navigable settings section; credentials remain Host-only and actions use typed RPC. */
-export function AntigravityAuthSettings({ rpc, t, subscribe, imageScope }: AntigravityAuthSettingsProps): ReactNode {
+export function AntigravityAuthSettings({ rpc, t, subscribe, imageForm }: AntigravityAuthSettingsProps): ReactNode {
   const [status, setStatus] = useState<AntigravityStatusView | null>(null)
-  const imageSettings = useCapabilitySettings(imageScope)
+  const imageSettings = useImageSettings(imageForm)
+  const [imageSaveState, setImageSaveState] = useState<'idle' | 'saving' | 'error'>('idle')
   const [quota, setQuota] = useState<QuotaStatusView | null>(null)
   const [quotaBusy, setQuotaBusy] = useState(false)
   const [quotaError, setQuotaError] = useState<string | null>(null)
@@ -250,6 +250,19 @@ export function AntigravityAuthSettings({ rpc, t, subscribe, imageScope }: Antig
     }
   }, [load, rpc, t, unmountSignal])
 
+  const saveImageEnabled = async (enabled: boolean): Promise<void> => {
+    if (imageForm === undefined) return
+    const signal = unmountSignal()
+    setImageSaveState('saving')
+    let accepted = false
+    try {
+      accepted = await imageForm.set('enabled', enabled)
+    } catch {
+      // Transport errors reject; the form remains the source of the displayed value.
+    }
+    if (!signal.aborted) setImageSaveState(accepted ? 'idle' : 'error')
+  }
+
   const projectError = projectErrorText(status?.login.errorCode, t)
   const isConfigured = status?.login.configured === true
 
@@ -414,11 +427,12 @@ export function AntigravityAuthSettings({ rpc, t, subscribe, imageScope }: Antig
               <Switch
                 label={t('toggleImage')}
                 checked={imageSettings.value?.enabled ?? false}
-                disabled={!capabilityAvailable(status, 'image') || imageSettings.status !== 'ready' || !imageSettings.writable}
-                onChange={next => { void imageScope?.set('enabled', next) }}
+                disabled={!capabilityAvailable(status, 'image') || imageSettings.status !== 'ready' || !imageSettings.writable || imageSaveState === 'saving'}
+                onChange={next => { void saveImageEnabled(next) }}
               />
             </div>
           </div>
+          {imageSaveState === 'error' ? <p className="agy-alert" role="alert">{t('imageSaveFailed')}</p> : null}
         </article>
 
       </div>

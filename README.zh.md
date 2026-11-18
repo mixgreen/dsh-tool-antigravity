@@ -64,19 +64,18 @@
 
 ## 安装与快速上手
 
-### 从 GitHub Release 安装（推荐）
+### 为 DSH 0.2.2-rc.3 构建并安装
 
-本分支以 `.tgz` 发布，不发布到上游同名 npm 包。使用 Node.js 22.19+（或 24+）及 DSH 0.1.5-rc.1 对应的宿主 API；旧版 DSH 需先升级。运行：
-
-```sh
-dsh plugin --profile web add https://github.com/mixgreen/dsh-tool-antigravity/releases/download/V0.6.1/dsh-tool-antigravity-0.6.1.tgz
-```
-
-也可从 [V0.6.1 Release](https://github.com/mixgreen/dsh-tool-antigravity/releases/tag/V0.6.1) 下载后安装：
+当前分支适配 DSH `0.2.2-rc.3`，需要 Node.js `>=24.9.0` 和 pnpm。已有的 [V0.6.1 Release](https://github.com/mixgreen/dsh-tool-antigravity/releases/tag/V0.6.1) 面向旧版 DSH `0.1.5-rc.1`；当前宿主请从此分支构建。
 
 ```sh
-dsh plugin --profile web add /绝对路径/dsh-tool-antigravity-0.6.1.tgz
+pnpm install --frozen-lockfile
+pnpm build
+npm pack
+dsh plugin --profile web add /absolute/path/dsh-tool-antigravity-0.6.2.tgz
 ```
+
+桌面宿主请在插件管理器中安装构建出的 `.tgz`，或将 CLI 命令里的 `web` 换为 `desktop`。
 
 安装完成后重启 DSH。插件管理器会根据 `dsh.bundle` 自动启用认证、模型路由和图片工具；无需手工重复添加插件行。首次使用仍需在设置中登录 Google。不要通过 `pnpm update dsh-tool-antigravity --latest` 切回上游 npm 版本；升级本分支请安装新的 Release 地址。
 

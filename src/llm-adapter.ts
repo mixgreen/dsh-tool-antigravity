@@ -20,16 +20,19 @@ import {
   toGeminiSchema,
 } from '@cortexkit/antigravity-auth-core'
 import type { OpencodeModelDefinitions } from '@cortexkit/antigravity-auth-core'
-import * as dshLlm from '@deepseek-ai/dsh-llm'
 import {
   CONTEXT_WINDOW_EXCEEDED_CODE,
+  IMAGE_OFFLOAD_REQUIRED_CODE,
+  offloadedImageText,
+  projectOffloadedImages,
+  requiredImageOffload,
   ToolCallId,
   LlmAdapter,
   LlmError,
   ReasoningEffortId,
   resolveRetryPolicy,
 } from '@deepseek-ai/dsh-llm'
-import { requestImageDimensions, type AttachmentStore, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import { isAttachmentError, requestImageDimensions, type AttachmentStore, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
 import type {
   FinishReason,
@@ -37,7 +40,8 @@ import type {
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
-  Message,
+  ImageAttachmentAccess,
+  RequestMessage,
   ReplayEnvelope,
   ResolvedRetryPolicy,
   StreamChunk,
@@ -117,9 +121,7 @@ export interface AntigravityAdapterOptions {
   readonly maxRequestBytes?: number
   readonly maxResponseBytes?: number
   readonly maxFrameBytes?: number
-  readonly attachments?: Pick<AttachmentStore, 'readImage'> & {
-    readImageRequest?(ref: ImageAttachmentRef, bounds: unknown, signal?: AbortSignal): Promise<{ data: Uint8Array; mediaType: string }>
-  }
+  readonly attachments?: Pick<AttachmentStore, 'readImageRequest' | 'imageHostPath'>
   readonly fs?: Pick<FileSystem, 'processPathFromHostPath'>
 }
 
@@ -273,11 +275,11 @@ export class AntigravityAdapter extends LlmAdapter {
   override async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
     this.providerInfo(provider)
     if (typeof model !== 'string' || model.trim().length === 0 || model.length > 256) {
-      throw new LlmError('The Antigravity model id is invalid', 'INVALID_MODEL')
+      throw LlmError.fromFailure({ message: 'The Antigravity model id is invalid', code: 'INVALID_MODEL' })
     }
     const definition = this.definitions[model]
     if (definition === undefined || definition.modalities.output.includes('image')) {
-      throw new LlmError('The Antigravity model is not in the audited text model snapshot', 'INVALID_MODEL')
+      throw LlmError.fromFailure({ message: 'The Antigravity model is not in the audited text model snapshot', code: 'INVALID_MODEL' })
     }
     const reasoning = getModelReasoningEfforts(model)
     return {
@@ -297,7 +299,7 @@ export class AntigravityAdapter extends LlmAdapter {
     }
     const signal = options.signal
     const requestedDefinition = this.definitions[options.model]
-    if (requestedDefinition === undefined || requestedDefinition.modalities.output.includes('image')) throw new LlmError('The Antigravity model is not in the audited text model snapshot', 'INVALID_MODEL')
+    if (requestedDefinition === undefined || requestedDefinition.modalities.output.includes('image')) throw LlmError.fromFailure({ message: 'The Antigravity model is not in the audited text model snapshot', code: 'INVALID_MODEL' })
     if (isAborted(signal)) {
       yield finishChunk('aborted', 'CANCELLED')
       return
@@ -323,8 +325,8 @@ export class AntigravityAdapter extends LlmAdapter {
       try {
         payload = await buildAntigravityGeneratePayloadForAdapter(options, credential, requestScope.session, requestScope.timestamp, this.adapterOptions.attachments, this.adapterOptions.fs)
       } catch (error) {
-        if (error instanceof LlmError) throw error
-        throw new LlmError('The Antigravity image input could not be admitted safely', 'UNSUPPORTED_MODALITY')
+        if (error instanceof LlmError || isAttachmentError(error)) throw error
+        throw LlmError.fromFailure({ message: 'The Antigravity image input could not be admitted safely', code: 'UNSUPPORTED_MODALITY' })
       }
       const sentImageBytes = payload.sentImageBytes
       delete payload.sentImageBytes
@@ -332,16 +334,12 @@ export class AntigravityAdapter extends LlmAdapter {
       /** Images alone exceed the private route's inline image budget: negotiate a logged offload. */
       const imageOffload = antigravityImageOffloadCount(options.messages, sentImageBytes)
       if (imageOffload > 0) {
-        throw new LlmError(
-          `The Antigravity image payload exceeds the route image budget; offload ${String(imageOffload)} oldest retained image occurrence(s)`,
-          IMAGE_OFFLOAD_REQUIRED_CODE,
-          { offloadImages: imageOffload } as Record<string, unknown>,
-        )
+        throw new LlmError(`The Antigravity image payload exceeds the route image budget; offload ${String(imageOffload)} oldest retained image occurrence(s)`, IMAGE_OFFLOAD_REQUIRED_CODE, { offloadImages: imageOffload })
       }
       /** Whole request exceeds the transport ceiling for reasons other than images: fail without blaming them. */
       const requestBudget = boundedRequestBytes(this.adapterOptions.maxRequestBytes)
       if (new TextEncoder().encode(serialized).byteLength > requestBudget) {
-        throw new LlmError('The Antigravity request exceeds the private transport byte limit', 'REQUEST_LIMIT')
+        throw LlmError.fromFailure({ message: 'The Antigravity request exceeds the private transport byte limit', code: 'REQUEST_LIMIT' })
       }
       let response: Response
       try {
@@ -522,7 +520,7 @@ export class AntigravityAdapter extends LlmAdapter {
     const credential = await this.readCredential(signal, forceCredentialRefresh)
     if (credential === undefined) throw new LlmError('Antigravity login is required before model discovery', 'AUTH')
     if (!bypassCache && this.catalogProjectId === credential.projectId && Date.now() < this.catalogExpiresAt) {
-      if (this.catalogFailureCode !== undefined) throw new LlmError('The Antigravity live model catalog refresh remains unavailable', this.catalogFailureCode)
+      if (this.catalogFailureCode !== undefined) throw LlmError.fromFailure({ message: 'The Antigravity live model catalog refresh remains unavailable', code: this.catalogFailureCode })
       return this.catalogModelIds
     }
     let response: Response
@@ -593,7 +591,7 @@ export class AntigravityAdapter extends LlmAdapter {
     try { ids = parseLiveModelIds(value, this.definitions) } catch (error) {
       const failure = error instanceof LlmError
         ? error
-        : new LlmError('The Antigravity live model catalog did not match the audited schema', 'PROTOCOL_DRIFT')
+        : LlmError.fromFailure({ message: 'The Antigravity live model catalog did not match the audited schema', code: 'PROTOCOL_DRIFT' })
       this.rememberCatalogFailure(credential.projectId, failure)
       throw failure
     }
@@ -723,13 +721,13 @@ function parseLiveModelIds(
   definitions: OpencodeModelDefinitions,
 ): Set<string> {
   const root = isRecord(value) && isRecord(value.response) ? value.response : value
-  if (!isRecord(root) || !isRecord(root.models)) throw new LlmError('The Antigravity live model catalog did not match the audited schema', 'PROTOCOL_DRIFT')
+  if (!isRecord(root) || !isRecord(root.models)) throw LlmError.fromFailure({ message: 'The Antigravity live model catalog did not match the audited schema', code: 'PROTOCOL_DRIFT' })
   const entries = Object.entries(root.models)
-  if (entries.length > 512) throw new LlmError('The Antigravity live model catalog exceeded the model limit', 'PROTOCOL_DRIFT')
+  if (entries.length > 512) throw LlmError.fromFailure({ message: 'The Antigravity live model catalog exceeded the model limit', code: 'PROTOCOL_DRIFT' })
   const aliases = getResolverAliasMap()
   const live = new Set<string>()
   for (const [id, rawEntry] of entries) {
-    if (!safeModelId(id) || !isRecord(rawEntry)) throw new LlmError('The Antigravity live model catalog did not match the audited schema', 'PROTOCOL_DRIFT')
+    if (!safeModelId(id) || !isRecord(rawEntry)) throw LlmError.fromFailure({ message: 'The Antigravity live model catalog did not match the audited schema', code: 'PROTOCOL_DRIFT' })
     const cleanId = cleanModelId(id)
     live.add(canonicalWireModel(cleanId, aliases))
     live.add(cleanId)
@@ -766,14 +764,14 @@ function parseLiveModelIds(
       live.add('claude-opus-5-5-high')
     }
     if (rawEntry.modelName !== undefined && typeof rawEntry.modelName === 'string') {
-      if (!safeModelId(rawEntry.modelName)) throw new LlmError('The Antigravity live model catalog did not match the audited schema', 'PROTOCOL_DRIFT')
+      if (!safeModelId(rawEntry.modelName)) throw LlmError.fromFailure({ message: 'The Antigravity live model catalog did not match the audited schema', code: 'PROTOCOL_DRIFT' })
       const cleanName = cleanModelId(rawEntry.modelName)
       live.add(canonicalWireModel(cleanName, aliases))
       live.add(cleanName)
       if (HYDROGEN_MODEL_ENUMS[cleanName] !== undefined) live.add('gemini-4-hydrogen')
     }
     if (rawEntry.displayName !== undefined && (typeof rawEntry.displayName !== 'string' || rawEntry.displayName.length > 512 || containsControl(rawEntry.displayName))) {
-      throw new LlmError('The Antigravity live model catalog did not match the audited schema', 'PROTOCOL_DRIFT')
+      throw LlmError.fromFailure({ message: 'The Antigravity live model catalog did not match the audited schema', code: 'PROTOCOL_DRIFT' })
     }
   }
   const available = new Set<string>()
@@ -905,78 +903,6 @@ function toolResponsePayload(content: unknown, isError?: boolean): Record<string
   return isError === true ? { error: content } : { content }
 }
 
-const IMAGE_OFFLOAD_REQUIRED_CODE = ((dshLlm as Record<string, unknown>).IMAGE_OFFLOAD_REQUIRED_CODE as string | undefined) ?? 'IMAGE_OFFLOAD_REQUIRED'
-
-function safeProjectOffloadedImages(messages: readonly Message[], placeholder: (ref: ImageAttachmentRef) => string): readonly Message[] {
-  if (typeof (dshLlm as Record<string, unknown>).projectOffloadedImages === 'function') {
-    return ((dshLlm as Record<string, unknown>).projectOffloadedImages as (msgs: readonly Message[], p: (ref: ImageAttachmentRef) => string) => readonly Message[])(messages, placeholder)
-  }
-  return messages.map(message => {
-    let replaced = false
-    const content = message.content.map(block => {
-      if (block.type === 'image' && (block as unknown as { offloaded?: boolean }).offloaded === true) {
-        replaced = true
-        return { type: 'text' as const, text: placeholder(block.attachment as ImageAttachmentRef) }
-      }
-      return block
-    })
-    return replaced ? { ...message, content } : message
-  })
-}
-
-function safeRequiredImageOffload(
-  messages: readonly Message[],
-  budget: { representation: string; maxBytes: number },
-  versionBytes: (block: unknown) => number,
-): number {
-  if (typeof (dshLlm as Record<string, unknown>).requiredImageOffload === 'function') {
-    return ((dshLlm as Record<string, unknown>).requiredImageOffload as (msgs: readonly Message[], b: typeof budget, vb: typeof versionBytes) => number)(messages, budget, versionBytes)
-  }
-  let totalBytes = 0
-  const imageSizes: number[] = []
-  for (const message of messages) {
-    for (const block of message.content) {
-      if (block.type === 'image' && (block as unknown as { offloaded?: boolean }).offloaded !== true) {
-        const raw = versionBytes(block)
-        const bytes = budget.representation === 'base64' ? Math.ceil(raw * 4 / 3) : raw
-        totalBytes += bytes
-        imageSizes.push(bytes)
-      }
-    }
-  }
-  let count = 0
-  let excess = totalBytes - budget.maxBytes
-  for (const size of imageSizes) {
-    if (excess <= 0) break
-    count += 1
-    excess -= size
-  }
-  return count
-}
-
-function safeOffloadedImageText(ref: ImageAttachmentRef, access: unknown): string {
-  if (typeof (dshLlm as Record<string, unknown>).offloadedImageText === 'function') {
-    return ((dshLlm as Record<string, unknown>).offloadedImageText as (r: ImageAttachmentRef, a: unknown) => string)(ref, access)
-  }
-  const name = ref.name !== undefined ? `${JSON.stringify(ref.name)} (${ref.attachmentId})` : String(ref.attachmentId)
-  return `[image omitted to fit request image limits; ${name}.]`
-}
-
-function safeResolveImageAttachmentAccess(
-  attachments: Pick<AttachmentStore, 'readImage'> | undefined,
-  mapHostPath: (hostPath: string) => string | undefined,
-  ref: ImageAttachmentRef,
-): unknown {
-  if (attachments === undefined) return undefined
-  if (typeof (dshLlm as Record<string, unknown>).resolveImageAttachmentAccess === 'function') {
-    return ((dshLlm as Record<string, unknown>).resolveImageAttachmentAccess as Function)(attachments, mapHostPath, ref)
-  }
-  const hostPath = (attachments as unknown as { imageHostPath?(r: ImageAttachmentRef): string | undefined }).imageHostPath?.(ref)
-  if (hostPath === undefined) return undefined
-  const readonlyPath = mapHostPath(hostPath)
-  return readonlyPath === undefined ? undefined : { readonlyPath }
-}
-
 function boundedRequestBytes(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_PRIVATE_REQUEST_BYTES
 }
@@ -985,28 +911,24 @@ function boundedRequestBytes(value: number | undefined): number {
  * Oldest-first image count the private route must offload before its image payload fits.
  * Uses the Host's own image-only budget instead of blaming total request bytes on images.
  */
-function antigravityImageOffloadCount(messages: readonly Message[], sentBytes: ReadonlyMap<string, number> | undefined): number {
-  return safeRequiredImageOffload(messages, {
+function antigravityImageOffloadCount(messages: readonly RequestMessage[], sentBytes: ReadonlyMap<string, number> | undefined): number {
+  return requiredImageOffload(messages, {
     representation: 'base64',
     maxBytes: ANTIGRAVITY_INLINE_IMAGE_BYTES,
-  }, (block: unknown) => {
-    const attachment = isRecord(block) && isRecord((block as Record<string, unknown>).attachment) ? ((block as Record<string, unknown>).attachment as Record<string, unknown>) : undefined
-    const attachmentId = attachment && typeof attachment.attachmentId === 'string' ? attachment.attachmentId : undefined
-    const sent = attachmentId === undefined ? undefined : sentBytes?.get(attachmentId)
-    if (typeof sent === 'number') return sent
-    return attachment && typeof attachment.bytes === 'number' ? attachment.bytes : 0
-  })
+  }, block => sentBytes?.get(block.attachment.attachmentId) ?? block.attachment.bytes)
 }
 
 /** Resolve a read-only execution-world path so an offloaded image stays recoverable by tools. */
 function resolveAntigravityImageAccess(
-  attachments: Pick<AttachmentStore, 'readImage'> | undefined,
+  attachments: Pick<AttachmentStore, 'imageHostPath'> | undefined,
   fs: Pick<FileSystem, 'processPathFromHostPath'> | undefined,
   ref: ImageAttachmentRef,
-): unknown {
+): ImageAttachmentAccess | undefined {
   if (attachments === undefined || fs === undefined) return undefined
   try {
-    return safeResolveImageAttachmentAccess(attachments, (hostPath: string) => fs.processPathFromHostPath(hostPath), ref)
+    const hostPath = attachments.imageHostPath(ref)
+    const readonlyPath = hostPath === undefined ? undefined : fs.processPathFromHostPath(hostPath)
+    return readonlyPath === undefined ? undefined : { readonlyPath }
   } catch {
     return undefined
   }
@@ -1015,14 +937,14 @@ function resolveAntigravityImageAccess(
 export function buildAntigravityGeneratePayload(
   options: GenerateOptions,
   credential: HostCredential,
-  attachments?: Pick<AttachmentStore, 'readImage'>,
+  attachments?: Pick<AttachmentStore, 'imageHostPath'>,
   fs?: Pick<FileSystem, 'processPathFromHostPath'>,
 ): Record<string, unknown> {
   const toolNames = new Map<string, ToolCallState>()
-  const history = safeProjectOffloadedImages(options.messages, (ref: ImageAttachmentRef) => safeOffloadedImageText(ref, resolveAntigravityImageAccess(attachments, fs, ref)))
-  const contents = (history as readonly Message[])
-    .filter((message: Message) => message.role !== 'system')
-    .map((message: Message) => mapMessage(message, options.model, toolNames))
+  const history = projectOffloadedImages(options.messages, (ref: ImageAttachmentRef) => offloadedImageText(ref, resolveAntigravityImageAccess(attachments, fs, ref)))
+  const contents = history
+    .filter((message) => message.role !== 'system')
+    .map((message) => mapMessage(message, options.model, toolNames))
   return buildPayloadFromContents(options, credential, contents)
 }
 
@@ -1031,17 +953,15 @@ async function buildAntigravityGeneratePayloadForAdapter(
   credential: HostCredential,
   session: Parameters<typeof buildAgyAgentRequestMetadata>[0],
   timestamp: number,
-  attachments: (Pick<AttachmentStore, 'readImage'> & {
-    readImageRequest?(ref: ImageAttachmentRef, bounds: unknown, signal?: AbortSignal): Promise<{ data: Uint8Array; mediaType: string }>
-  }) | undefined,
+  attachments: Pick<AttachmentStore, 'readImageRequest' | 'imageHostPath'> | undefined,
   fs?: Pick<FileSystem, 'processPathFromHostPath'>,
 ): Promise<Record<string, unknown> & { sentImageBytes?: Map<string, number> }> {
   /** Downscaled byte length actually sent per attachment; requiredImageOffload applies base64Length itself. */
   const sentImageBytes = new Map<string, number>()
   const contents: Record<string, unknown>[] = []
   const toolNames = new Map<string, ToolCallState>()
-  const history = safeProjectOffloadedImages(options.messages, (ref: ImageAttachmentRef) => safeOffloadedImageText(ref, resolveAntigravityImageAccess(attachments, fs, ref)))
-  for (const message of (history as readonly Message[])) {
+  const history = projectOffloadedImages(options.messages, (ref: ImageAttachmentRef) => offloadedImageText(ref, resolveAntigravityImageAccess(attachments, fs, ref)))
+  for (const message of history) {
     if (message.role === 'system') continue
     contents.push(await mapMessageWithAttachments(message, options.model, toolNames, attachments, options.signal, sentImageBytes))
   }
@@ -1316,18 +1236,18 @@ function claudeToolTypeHint(value: unknown): string {
   return type
 }
 
-function mapMessage(message: Message, model: string, toolNames: Map<string, ToolCallState>): Record<string, unknown> {
+function mapMessage(message: RequestMessage, model: string, toolNames: Map<string, ToolCallState>): Record<string, unknown> {
   /** Calls of a new assistant message are the only ones its results may answer. */
   if (message.role === 'assistant') expirePendingToolCalls(toolNames)
   const parts: Record<string, unknown>[] = []
-  const replay = compatibleReplayState(message, ANTIGRAVITY_PROVIDER, model, contentKinds(message))
+  const replay = message.role === 'assistant' ? compatibleReplayState(message, ANTIGRAVITY_PROVIDER, model, contentKinds(message)) : undefined
   const replayBlocks = replay?.blocks ?? []
   const isClaude = antigravityModelFamily(model) === 'claude'
   let replayIndex = 0
   /** A tool message answers one call; emit that response once and keep any remaining blocks. */
   let emittedToolResponse = false
-  if ((message as unknown as { role?: string }).role === 'tool' && typeof (message as unknown as { toolCallId?: string }).toolCallId === 'string' && ((message as unknown as { toolCallId: string }).toolCallId.length > 0)) {
-    const toolCallId = requireToolCallId((message as unknown as { toolCallId: string }).toolCallId)
+  if (message.role === 'tool') {
+    const toolCallId = requireToolCallId(message.toolCallId)
     /** A tool message with no prior call of that id is skipped, not an error. */
     const binding = toolNames.has(toolCallId) ? consumeToolBinding(toolNames, toolCallId) : undefined
     if (binding !== undefined) {
@@ -1336,7 +1256,7 @@ function mapMessage(message: Message, model: string, toolNames: Map<string, Tool
         functionResponse: {
           ...(isClaude ? { id: binding.id } : {}),
           name: binding.name,
-          response: toolResponsePayload(blocksToText(message.content), (message as unknown as { isError?: boolean }).isError),
+          response: toolResponsePayload(blocksToText(message.content), message.isError),
         },
       })
     }
@@ -1370,19 +1290,8 @@ function mapMessage(message: Message, model: string, toolNames: Map<string, Tool
         },
         ...(signature === undefined ? {} : { thoughtSignature: signature }),
       })
-    } else if (block.type === 'tool-result') {
-      /** A role='tool' message was already answered as a whole; its block must not consume the call again. */
-      if (emittedToolResponse) continue
-      const binding = consumeToolBinding(toolNames, block.toolCallId)
-      parts.push({
-        functionResponse: {
-          ...(isClaude ? { id: binding.id } : {}),
-          name: binding.name,
-          response: toolResponsePayload(blocksToText(block.content), block.isError),
-        },
-      })
     } else if (block.type === 'image') {
-      throw new LlmError('Antigravity text requests do not accept unresolved image blocks', 'UNSUPPORTED_MODALITY')
+      throw LlmError.fromFailure({ message: 'Antigravity text requests do not accept unresolved image blocks', code: 'UNSUPPORTED_MODALITY' })
     }
   }
   return {
@@ -1392,28 +1301,26 @@ function mapMessage(message: Message, model: string, toolNames: Map<string, Tool
 }
 
 async function mapMessageWithAttachments(
-  message: Message,
+  message: RequestMessage,
   model: string,
   toolNames: Map<string, ToolCallState>,
-  attachments: (Pick<AttachmentStore, 'readImage'> & {
-    readImageRequest?(ref: ImageAttachmentRef, bounds: unknown, signal?: AbortSignal): Promise<{ data: Uint8Array; mediaType: string }>
-  }) | undefined,
+  attachments: Pick<AttachmentStore, 'readImageRequest' | 'imageHostPath'> | undefined,
   signal: AbortSignal | undefined,
   sentImageBytes?: Map<string, number>,
 ): Promise<Record<string, unknown>> {
   if (!message.content.some(block => block.type === 'image')) return mapMessage(message, model, toolNames)
-  if (attachments === undefined) throw new LlmError('Antigravity image input requires the Host AttachmentStore', 'UNSUPPORTED_MODALITY')
+  if (attachments === undefined) throw LlmError.fromFailure({ message: 'Antigravity image input requires the Host AttachmentStore', code: 'UNSUPPORTED_MODALITY' })
   /** Calls of a new assistant message are the only ones its results may answer. */
   if (message.role === 'assistant') expirePendingToolCalls(toolNames)
-  const replay = compatibleReplayState(message, ANTIGRAVITY_PROVIDER, model, contentKinds(message))
+  const replay = message.role === 'assistant' ? compatibleReplayState(message, ANTIGRAVITY_PROVIDER, model, contentKinds(message)) : undefined
   const replayBlocks = replay?.blocks ?? []
   const parts: Record<string, unknown>[] = []
   const isClaude = antigravityModelFamily(model) === 'claude'
   let replayIndex = 0
   /** A tool message answers one call; emit that response once and keep any remaining blocks. */
   let emittedToolResponse = false
-  if ((message as unknown as { role?: string }).role === 'tool' && typeof (message as unknown as { toolCallId?: string }).toolCallId === 'string' && ((message as unknown as { toolCallId: string }).toolCallId.length > 0)) {
-    const toolCallId = requireToolCallId((message as unknown as { toolCallId: string }).toolCallId)
+  if (message.role === 'tool') {
+    const toolCallId = requireToolCallId(message.toolCallId)
     /** A tool message with no prior call of that id is skipped, not an error. */
     const binding = toolNames.has(toolCallId) ? consumeToolBinding(toolNames, toolCallId) : undefined
     if (binding !== undefined) {
@@ -1422,7 +1329,7 @@ async function mapMessageWithAttachments(
         functionResponse: {
           ...(isClaude ? { id: binding.id } : {}),
           name: binding.name,
-          response: toolResponsePayload(blocksToText(message.content), (message as unknown as { isError?: boolean }).isError),
+          response: toolResponsePayload(blocksToText(message.content), message.isError),
         },
       })
     }
@@ -1436,24 +1343,13 @@ async function mapMessageWithAttachments(
       ?? (block as unknown as { signature?: string; thoughtSignature?: string }).thoughtSignature
       ?? replaySignature
     if (block.type === 'image') {
-      const ref = block.attachment as ImageAttachmentRef
-      let mediaType: string
-      let encoded: string
-      if (typeof attachments.readImageRequest === 'function') {
-        const stored = await attachments.readImageRequest(ref, {
-          ...requestImageDimensions(ref.width, ref.height, ANTIGRAVITY_REQUEST_IMAGE_MAX_PIXELS),
-          maxBytes: ANTIGRAVITY_REQUEST_IMAGE_MAX_BYTES,
-        }, signal)
-        mediaType = stored.mediaType
-        encoded = Buffer.from(stored.data).toString('base64')
-        sentImageBytes?.set(ref.attachmentId, stored.data.byteLength)
-      } else {
-        const stored = await attachments.readImage(ref as never, signal)
-        mediaType = stored.ref.mediaType
-        encoded = Buffer.from(stored.data).toString('base64')
-        sentImageBytes?.set(ref.attachmentId, stored.data.byteLength)
-      }
-      parts.push({ inlineData: { mimeType: mediaType, data: encoded } })
+      const ref = block.attachment
+      const stored = await attachments.readImageRequest(ref, {
+        ...requestImageDimensions(ref.width, ref.height, ANTIGRAVITY_REQUEST_IMAGE_MAX_PIXELS),
+        maxBytes: ANTIGRAVITY_REQUEST_IMAGE_MAX_BYTES,
+      }, signal)
+      sentImageBytes?.set(ref.attachmentId, stored.data.byteLength)
+      parts.push({ inlineData: { mimeType: stored.mediaType, data: Buffer.from(stored.data).toString('base64') } })
     } else if (block.type === 'text') {
       /** Text already reached the model through the tool response above. */
       if (emittedToolResponse) continue
@@ -1475,17 +1371,6 @@ async function mapMessageWithAttachments(
         },
         ...(signature === undefined ? {} : { thoughtSignature: signature }),
       })
-    } else if (block.type === 'tool-result') {
-      /** A role='tool' message was already answered as a whole; its block must not consume the call again. */
-      if (emittedToolResponse) continue
-      const binding = consumeToolBinding(toolNames, block.toolCallId)
-      parts.push({
-        functionResponse: {
-          ...(isClaude ? { id: binding.id } : {}),
-          name: binding.name,
-          response: toolResponsePayload(blocksToText(block.content), block.isError),
-        },
-      })
     }
   }
   return { role: message.role === 'assistant' ? 'model' : 'user', parts }
@@ -1504,7 +1389,7 @@ interface ToolCallState {
 }
 
 function rememberToolName(toolNames: Map<string, ToolCallState>, callId: unknown, name: string): string {
-  if (name.length === 0 || name.length > 256 || containsControl(name)) throw new LlmError('The tool call name is invalid', 'INVALID_ARGS')
+  if (name.length === 0 || name.length > 256 || containsControl(name)) throw LlmError.fromFailure({ message: 'The tool call name is invalid', code: 'INVALID_ARGS' })
   const id = requireToolCallId(callId)
   const state = toolNames.get(id)
   /**
@@ -1530,7 +1415,7 @@ function rememberToolName(toolNames: Map<string, ToolCallState>, callId: unknown
  */
 function consumeToolBinding(toolNames: Map<string, ToolCallState>, callId: unknown): ToolCallBinding {
   const state = toolNames.get(requireToolCallId(callId))
-  if (state === undefined) throw new LlmError('A tool result did not match a prior tool call', 'INVALID_ARGS')
+  if (state === undefined) throw LlmError.fromFailure({ message: 'A tool result did not match a prior tool call', code: 'INVALID_ARGS' })
   const next = state.pending.shift()
   return next ?? state.last
 }
@@ -1553,7 +1438,7 @@ function expirePendingToolCalls(toolNames: Map<string, ToolCallState>): void {
 
 function requireToolCallId(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 512 || containsControl(value)) {
-    throw new LlmError('The tool call id is invalid', 'INVALID_ARGS')
+    throw LlmError.fromFailure({ message: 'The tool call id is invalid', code: 'INVALID_ARGS' })
   }
   return value
 }
@@ -1593,7 +1478,7 @@ function requestSessionKey(options: GenerateOptions): string {
   return options.sessionId === undefined ? 'default' : `session:${fnv1a64Signed(String(options.sessionId))}`
 }
 
-function contentKinds(message: Message): Array<'text' | 'reasoning' | 'tool-call'> {
+function contentKinds(message: RequestMessage): Array<'text' | 'reasoning' | 'tool-call'> {
   return message.content.flatMap(block => block.type === 'text' || block.type === 'reasoning' || block.type === 'tool-call' ? [block.type] : [])
 }
 
@@ -1712,7 +1597,7 @@ async function responseReportsContextWindowExceeded(
     return false
   } catch (error) {
     if (error instanceof PrivateTransportError && error.code === 'cancelled') throw toLlmError(error)
-    if (isAborted(options.signal)) throw new LlmError('The Antigravity request was cancelled', 'CANCELLED')
+    if (isAborted(options.signal)) throw LlmError.fromFailure({ message: 'The Antigravity request was cancelled', code: 'CANCELLED' })
     return false
   }
 }
@@ -1816,7 +1701,7 @@ function parseJsonObject(value: string): Record<string, unknown> {
   } catch {
     // The provider must never receive silently rewritten historical tool calls.
   }
-  throw new LlmError('The Antigravity tool-call history is malformed', 'PROTOCOL_DRIFT')
+  throw LlmError.fromFailure({ message: 'The Antigravity tool-call history is malformed', code: 'PROTOCOL_DRIFT' })
 }
 
 function blocksToText(blocks: readonly { type: string; text?: string }[]): string {
@@ -1885,10 +1770,10 @@ function toModelCatalogError(
   signal: AbortSignal | undefined,
   fallback: 'provider' | 'protocol',
 ): LlmError {
-  if (isAborted(signal)) return new LlmError('The Antigravity live model catalog request was cancelled', 'CANCELLED')
+  if (isAborted(signal)) return LlmError.fromFailure({ message: 'The Antigravity live model catalog request was cancelled', code: 'CANCELLED' })
   if (error instanceof LlmError) return error
   if (error instanceof PrivateTransportError || fallback === 'provider') return toLlmError(error)
-  return new LlmError('The Antigravity live model catalog did not match the audited schema', 'PROTOCOL_DRIFT')
+  return LlmError.fromFailure({ message: 'The Antigravity live model catalog did not match the audited schema', code: 'PROTOCOL_DRIFT' })
 }
 
 function toLlmError(error: unknown): LlmError {
@@ -1902,11 +1787,9 @@ function toLlmError(error: unknown): LlmError {
     const message = kind === 'rate-limited'
       ? 'Antigravity rate limit reached (Google returned 429 Resource Exhausted); please wait for your quota window to refresh'
       : `The Antigravity private request failed safely${detail}`
-    return error.status === undefined
-      ? new LlmError(message, code)
-      : new LlmError(message, code, { status: error.status })
+    return LlmError.fromFailure({ message, code, ...(error.status === undefined ? {} : { status: error.status }) })
   }
-  return new LlmError('The Antigravity provider request failed safely', 'PROVIDER_ERROR')
+  return LlmError.fromFailure({ message: 'The Antigravity provider request failed safely', code: 'PROVIDER_ERROR' })
 }
 
 function boundedTimeout(value: number | undefined, fallback: number): number {
@@ -1918,12 +1801,12 @@ function boundedLimit(value: number | undefined, fallback: number): number {
 }
 
 function boundedInteger(value: number, min: number, max: number, field: string): number {
-  if (!Number.isSafeInteger(value) || value < min || value > max) throw new LlmError(`The Antigravity ${field} option is invalid`, 'INVALID_OPTIONS')
+  if (!Number.isSafeInteger(value) || value < min || value > max) throw LlmError.fromFailure({ message: `The Antigravity ${field} option is invalid`, code: 'INVALID_OPTIONS' })
   return value
 }
 
 function boundedNumber(value: number, min: number, max: number, field: string): number {
-  if (!Number.isFinite(value) || value < min || value > max) throw new LlmError(`The Antigravity ${field} option is invalid`, 'INVALID_OPTIONS')
+  if (!Number.isFinite(value) || value < min || value > max) throw LlmError.fromFailure({ message: `The Antigravity ${field} option is invalid`, code: 'INVALID_OPTIONS' })
   return value
 }
 

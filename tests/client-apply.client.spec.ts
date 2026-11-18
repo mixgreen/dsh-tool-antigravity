@@ -2,7 +2,7 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { describe, expect, it, vi } from 'vitest'
-import { apply } from '../src/client/index.ts'
+import { apply, inject } from '../src/client/index.ts'
 import type { AntigravityAuthKey } from '../src/client/locales.ts'
 import { createStatusView } from '../src/status.ts'
 
@@ -21,6 +21,8 @@ function bench(isLoopback = true) {
   const slots: SlotRecord[] = []
   const listeners = new Set<() => void>()
 
+  const imageForm = {}
+  const getForm = vi.fn(() => imageForm)
   const ctx = {
     locale: {
       register(namespace: string, value: { zh: Record<AntigravityAuthKey, string>; en: Record<AntigravityAuthKey, string> }) {
@@ -42,12 +44,9 @@ function bench(isLoopback = true) {
         }
       },
     },
-    settingsScope: {
-      bind: () => undefined,
-    },
+    configForms: { get: getForm },
     get(service: string) {
       if (service === 'connection') return { isLoopback, rpc: { call } }
-      if (service === 'configForms') return { get: () => undefined }
       throw new Error(`unexpected service: ${service}`)
     },
     effect(effect: () => () => void) {
@@ -66,6 +65,8 @@ function bench(isLoopback = true) {
   return {
     call,
     dictionaries,
+    getForm,
+    imageForm,
     listeners,
     slots,
     dispose: () => { for (const dispose of disposers.reverse()) dispose() },
@@ -76,13 +77,16 @@ describe('Antigravity client apply', () => {
   it('declares its services and removes dictionaries, slots, and listeners on teardown', async () => {
     const b = bench()
 
+    expect(inject).toEqual(['slots', 'locale', 'connection', 'configForms'])
+    expect(b.getForm).toHaveBeenCalledExactlyOnceWith('antigravity-image')
     expect(b.slots.map(record => record.options)).toEqual([
       expect.objectContaining({ name: 'settings.section', id: 'antigravity-auth', order: 20 }),
     ])
     const settings = b.slots[0]
-    const props = (settings?.options.inject as (() => { rpc: { status: () => Promise<unknown> }; t: (key: AntigravityAuthKey) => string }) | undefined)?.()
+    const props = (settings?.options.inject as (() => { rpc: { status: () => Promise<unknown> }; t: (key: AntigravityAuthKey) => string; imageForm: unknown }) | undefined)?.()
     await props?.rpc.status()
     expect(b.call).toHaveBeenCalledWith('/api', 'antigravity-auth/status', {}, undefined)
+    expect(props?.imageForm).toBe(b.imageForm)
     expect(props?.t('title')).toBe('Antigravity Auth')
 
     b.dispose()
